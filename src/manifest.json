@@ -7,7 +7,7 @@
     "type": "plugin",
     "description": "Read AniList discussions inside Seanime.",
     "author": "Bas1874",
-    "icon": "",
+    "icon": "https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Icons/ad-Icon.png",
     "website": "",
     "lang": "multi",
     "payloadURI": "https://raw.githubusercontent.com/Bas1874/anilist-discussion/refs/heads/main/src/my-plugin.ts",
