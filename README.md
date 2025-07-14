@@ -25,7 +25,7 @@ This plugin adds a dedicated tray icon that opens a fully-featured discussion pa
 
 ## 📺 Showcase
 
-![Showcase 1](https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Gifs/Showcase1.gif)
+![Showcase GIF](https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Gifs/Showcase1.gif)
 
 ## ⚙️ Installation
 
