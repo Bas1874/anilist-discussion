@@ -21,31 +21,106 @@ interface ThreadComment {
     childComments?: ThreadComment[];
     isOptimistic?: boolean;
 }
+// NEW: Expanded segment types for rich text formatting
 interface CommentSegment {
-    type: 'text' | 'spoiler'; content: string;
+    type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br';
+    content: string;
 }
+
 
 function init() {
     $ui.register((ctx) => {
     
         // --- HELPER FUNCTIONS ---
-        function cleanCommentText(text: string): string {
-            if (!text) return '';
-            return text.replace(/<br>/g, '\n').replace(/~!.*?~>/g, '[Spoiler]').replace(/img\d*\([^)]+\)/g, '[Image]').replace(/<[^>]*>/g, '');
+
+        function openUrlInBrowser(url: string) {
+            try {
+                let command: string;
+                let args: string[];
+                if ($os.platform === 'windows') {
+                    command = 'cmd';
+                    args = ['/C', 'start', url.replace(/&/g, "^&")];
+                } else if ($os.platform === 'darwin') {
+                    command = 'open';
+                    args = [url];
+                } else {
+                    command = 'xdg-open';
+                    args = [url];
+                }
+                const cmd = $osExtra.asyncCmd(command, ...args);
+                cmd.run(() => {});
+            } catch (e: any) {
+                error.set("Failed to open URL. " + e.message);
+            }
         }
+        
         function parseComment(text: string): CommentSegment[] {
             if (!text) return [];
-            const segments: CommentSegment[] = [];
-            const spoilerRegex = /~!(.*?)!~/gs;
-            let lastIndex = 0; let match;
-            while ((match = spoilerRegex.exec(text)) !== null) {
-                if (match.index > lastIndex) segments.push({ type: 'text', content: text.substring(lastIndex, match.index) });
-                segments.push({ type: 'spoiler', content: match[1] });
-                lastIndex = match.index + match[0].length;
+
+            const codeBlockRegex = /```([\s\S]*?)```/g;
+            const parts = text.split(codeBlockRegex);
+            const initialSegments: { text: string, isCode: boolean }[] = [];
+            
+            for (let i = 0; i < parts.length; i++) {
+                if (i % 2 === 1) { 
+                    initialSegments.push({ text: parts[i], isCode: true });
+                } else if (parts[i]) { 
+                    initialSegments.push({ text: parts[i], isCode: false });
+                }
             }
-            if (lastIndex < text.length) segments.push({ type: 'text', content: text.substring(lastIndex) });
-            return segments;
+
+            let finalSegments: CommentSegment[] = [];
+
+            initialSegments.forEach(segment => {
+                if (segment.isCode) {
+                    finalSegments.push({ type: 'code-block', content: segment.text });
+                    return;
+                }
+
+                const lines = segment.text.split('\n');
+                lines.forEach((line, lineIndex) => {
+                    if (line.startsWith('# ')) {
+                        finalSegments.push({ type: 'heading', content: line.substring(2) });
+                    }
+                    else if (/^---\s*$/.test(line)) {
+                        finalSegments.push({ type: 'hr', content: '' });
+                    }
+                    else if (line.startsWith('> ')) {
+                        finalSegments.push({ type: 'blockquote', content: line.substring(2) });
+                    }
+                    else {
+                        const inlineRegex = /(\_\_(.*?)\_\_)|(_(.*?)_)|(~~(.*?)~~)|(`(.*?)`)|(img\d*\((.*?)\))|(~!(.*?)!~)|(https?:\/\/[^\s<>"'{}|\\^`[\]]+)/g;
+                        let lastIndex = 0;
+                        let match;
+                        while ((match = inlineRegex.exec(line)) !== null) {
+                            if (match.index > lastIndex) {
+                                finalSegments.push({ type: 'text', content: line.substring(lastIndex, match.index) });
+                            }
+
+                            const [_, bold, boldContent, italic, italicContent, strike, strikeContent, inlineCode, inlineCodeContent, img, imgUrl, spoiler, spoilerContent, link] = match;
+
+                            if (bold) finalSegments.push({ type: 'bold', content: boldContent });
+                            else if (italic) finalSegments.push({ type: 'italic', content: italicContent });
+                            else if (strike) finalSegments.push({ type: 'strike', content: strikeContent });
+                            else if (inlineCode) finalSegments.push({ type: 'inline-code', content: inlineCodeContent });
+                            else if (img) finalSegments.push({ type: 'image', content: imgUrl });
+                            else if (spoiler) finalSegments.push({ type: 'spoiler', content: spoilerContent });
+                            else if (link) finalSegments.push({ type: 'link', content: link });
+
+                            lastIndex = match.index + _.length;
+                        }
+                        if (lastIndex < line.length) {
+                            finalSegments.push({ type: 'text', content: line.substring(lastIndex) });
+                        }
+                    }
+                    if (lineIndex < lines.length - 1) {
+                         finalSegments.push({ type: 'br', content: '' });
+                    }
+                });
+            });
+            return finalSegments;
         }
+
         function formatTimeAgo(timestamp: number): string {
             const now = Date.now();
             const seconds = Math.floor((now - (timestamp * 1000)) / 1000);
@@ -82,6 +157,7 @@ function init() {
         const isSubmitting = ctx.state(false);
         const replyInputRef = ctx.fieldRef<string>("");
         const editInputRef = ctx.fieldRef<string>("");
+        const linkToConfirm = ctx.state<string | null>(null);
 
         // --- DATA FETCHING & MUTATIONS ---
         const fetchViewer = async () => {
@@ -336,7 +412,13 @@ function init() {
         };
 
         // --- TRAY SETUP & EVENT HANDLING ---
-        const tray = ctx.newTray({ tooltipText: "Discussions", iconUrl: "https://raw.githubusercontent.com/5rahim/seanime/main/public/icons/discussion.svg", withContent: true });
+        const tray = ctx.newTray({
+            tooltipText: "Discussions",
+            iconUrl: "https://raw.githubusercontent.com/5rahim/seanime/main/public/icons/discussion.svg",
+            withContent: true,
+            width: '850px',
+            height: '90vh'
+        });
         tray.onOpen(() => { fetchViewer(); if (currentMediaId.get()) fetchThreads(currentMediaId.get()!); });
         ctx.effect(() => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id); }, [selectedThread]);
         ctx.registerEventHandler("back-to-list", () => {
@@ -351,9 +433,74 @@ function init() {
         ctx.registerEventHandler("cancel-delete", () => {
             deletingCommentId.set(null);
         });
+        
+        function renderToolbar(fieldRef: any) {
+            const wrapText = (chars: string) => {
+                fieldRef.setValue((fieldRef.current || "") + chars);
+            };
+            return tray.flex([
+                tray.button({ label: 'B', onClick: ctx.eventHandler('tb-b', () => wrapText('____')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'I', onClick: ctx.eventHandler('tb-i', () => wrapText('__')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'S', onClick: ctx.eventHandler('tb-s', () => wrapText('~~~~')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'H', onClick: ctx.eventHandler('tb-h', () => wrapText('\n# ')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Link', onClick: ctx.eventHandler('tb-link', () => wrapText('[](url)')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Quote', onClick: ctx.eventHandler('tb-quote', () => wrapText('\n> ')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Code', onClick: ctx.eventHandler('tb-code', () => wrapText('``')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Spoiler', onClick: ctx.eventHandler('tb-spoiler', () => wrapText('~!!~')), size: 'sm', intent: 'gray-subtle' }),
+            ], { style: { gap: 1, padding: '4px', backgroundColor: '#1A202C', borderRadius: '4px', marginBottom: '4px' } });
+        }
+        
+        function renderSegment(segment: CommentSegment, key: string) {
+             switch (segment.type) {
+                case 'text': return tray.text(segment.content);
+                case 'br': return tray.div([], { style: { height: '0.5em', width: '100%' } }); 
+                case 'bold': return tray.text({ text: segment.content, weight: 'bold' });
+                case 'italic': return tray.text({ text: segment.content, style: { fontStyle: 'italic' } });
+                case 'strike': return tray.text({ text: segment.content, style: { textDecoration: 'line-through' } });
+                case 'heading': return tray.text({ text: segment.content, size: 'lg', weight: 'semibold' });
+                case 'hr': return tray.div([], { style: { borderTop: '1px solid #4A5568', margin: '8px 0' } });
+                case 'blockquote': return tray.div([tray.text(segment.content)], { style: { borderLeft: '3px solid #4A5568', paddingLeft: '8px', color: '#A0AEC0', fontStyle: 'italic' }});
+                case 'inline-code': return tray.text({ text: segment.content, style: { fontFamily: 'monospace', backgroundColor: '#2D3748', padding: '2px 4px', borderRadius: '4px' } });
+                case 'code-block': return tray.div([tray.text(segment.content)], { style: { fontFamily: 'monospace', backgroundColor: '#1A202C', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap', width: '100%' } });
+                case 'spoiler':
+                    return revealedSpoilers.get()[key]
+                        ? tray.text({ text: segment.content, style: { background: '#2D3748', padding: '2px 4px', borderRadius: '4px' } })
+                        : tray.button({ label: "[Spoiler]", intent: "primary-subtle", size: "sm", onClick: ctx.eventHandler(key, () => revealedSpoilers.set(s => ({ ...s, [key]: true }))) });
+                case 'image':
+                    return tray.stack([
+                        tray.div([], { style: { width: '100%', maxWidth: '300px', aspectRatio: '16 / 9', backgroundImage: `url(${segment.content})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', borderRadius: '4px', backgroundColor: '#2D3748' } }),
+                        tray.flex([
+                            tray.text({ text: "Image not loading?", size: "sm", color: "gray" }),
+                            tray.button({ label: "Open Link", intent: 'link', size: 'sm', onClick: ctx.eventHandler(`${key}-open`, () => linkToConfirm.set(segment.content)) })
+                        ], { style: { gap: 2, alignItems: 'center', marginTop: '2px' } })
+                    ], { style: { gap: 1, marginTop: '4px' } });
+                case 'link':
+                    return tray.button({ label: segment.content, intent: 'link', size: 'sm', onClick: ctx.eventHandler(key, () => linkToConfirm.set(segment.content)) });
+            }
+        }
 
         // --- UI RENDERING ---
         tray.render(() => {
+            const urlToConfirm = linkToConfirm.get();
+            if (urlToConfirm) {
+                return tray.div([
+                    tray.stack([
+                        tray.text({ text: "Open external link?", weight: 'semibold', size: 'lg'}),
+                        tray.text({ text: urlToConfirm, size: "sm", color: "gray", style: { wordBreak: 'break-all' } }),
+                        tray.flex([
+                            tray.button({ label: "Yes, open", intent: "primary", onClick: ctx.eventHandler('confirm-open-link', () => {
+                                openUrlInBrowser(urlToConfirm);
+                                linkToConfirm.set(null);
+                            })}),
+                            tray.button({ label: "Cancel", intent: "gray", onClick: ctx.eventHandler('cancel-open-link', () => {
+                                linkToConfirm.set(null);
+                            })})
+                        ], { style: { gap: 2, justifyContent: 'center', marginTop: '12px' }})
+                    ], { style: { gap: 2, alignItems: 'center' }})
+                ], { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '20px' }});
+            }
+
+
             if (!currentMediaId.get()) return tray.stack([tray.text("Navigate to an anime to see discussions.")]);
             if (isLoading.get() && !threads.get()) return tray.stack([tray.text("Loading...")]);
             if (error.get()) return tray.stack([tray.text(error.get()!)]);
@@ -370,22 +517,23 @@ function init() {
                             tray.button({ label: "Yes", intent: "alert", onClick: ctx.eventHandler(`confirm-delete-${comment.id}`, () => handleDeleteComment(comment.id)) }),
                             tray.button({ label: "No", intent: "gray", onClick: "cancel-delete" })
                         ], { style: { gap: 3, alignItems: 'center', justifyContent: 'center' } })
-                    ], { style: { borderTop: '1px solid #333', paddingTop: '10px', marginTop: '10px' } });
+                    ], { style: { borderTop: '1px solid #4A5568', paddingTop: '12px', marginTop: '12px' } });
                 }
-
+                
                 if (isEditingThisComment) {
                     return tray.div([
                         tray.stack([
+                            renderToolbar(editInputRef),
                             tray.input({ placeholder: "Edit your comment...", fieldRef: editInputRef }),
                             tray.flex([
                                 tray.button({ label: isSubmitting.get() ? "Saving..." : "Save", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`save-edit-${comment.id}`, () => handleEditComment(comment.id, editInputRef.current!)) }),
                                 tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-edit" })
                             ], { style: { gap: 2, justifyContent: 'flex-end' }})
                         ], { style: { marginTop: '8px' }})
-                    ], { style: { borderTop: '1px solid #333', paddingTop: '10px', marginTop: '10px' } });
+                    ], { style: { borderTop: '1px solid #4A5568', paddingTop: '12px', marginTop: '12px' } });
                 }
 
-                const segments = parseComment(comment.comment.replace(/<br>/g, '\n'));
+                const segments = parseComment(comment.comment);
                 const actionButtons = [
                     tray.button({ label: `♥ ${comment.likeCount}`, intent: comment.isLiked ? 'primary' : 'gray-subtle', size: 'sm', onClick: ctx.eventHandler(`like-comment-${comment.id}`, () => handleToggleLike(comment.id)) }),
                     tray.button({ label: `Reply`, intent: 'gray-subtle', size: 'sm', onClick: ctx.eventHandler(`reply-to-comment-${comment.id}`, () => { replyingToCommentId.set(comment.id); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); replyInputRef.setValue(""); })})
@@ -411,111 +559,88 @@ function init() {
                         tray.div([], { style: { width: '36px', height: '36px', borderRadius: '50%', backgroundImage: `url(${comment.user.avatar.large})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 } }),
                         tray.stack([
                             tray.flex([
-                                tray.text({ text: comment.user.name, weight: "semibold" }),
-                                tray.text({ text: formatTimeAgo(comment.createdAt), size: "sm", color: "gray", style: { fontStyle: 'italic', marginLeft: '8px' } })
+                                tray.text({ text: comment.user.name, weight: "semibold", style: { whiteSpace: 'nowrap' } }),
+                                tray.text({ text: formatTimeAgo(comment.createdAt), size: "sm", color: "gray", style: { fontStyle: 'italic', marginLeft: '8px', whiteSpace: 'nowrap' } })
                             ], { style: { alignItems: 'baseline', alignSelf: 'flex-start' } }),
-                            tray.flex(segments.map((segment, index) => {
-                                const spoilerId = `${comment.id}-${index}`;
-                                if (segment.type === 'spoiler') {
-                                    return revealedSpoilers.get()[spoilerId]
-                                        ? tray.text({ text: segment.content, style: { background: '#2D3748', padding: '2px 4px', borderRadius: '4px' } })
-                                        : tray.button({ label: "[Spoiler]", intent: "primary-subtle", size: "sm", onClick: ctx.eventHandler(spoilerId, () => revealedSpoilers.set(s => ({ ...s, [spoilerId]: true }))) });
-                                } return tray.text(segment.content);
-                            }), { style: { flexWrap: 'wrap', alignItems: 'center', gap: 1 } }),
+                            tray.div(segments.map((segment, index) => renderSegment(segment, `${comment.id}-${index}`)), { style: { flexWrap: 'wrap', alignItems: 'center', gap: '2px', lineHeight: '1.6' } }),
                             tray.flex(actionButtons, { style: { gap: 2, marginTop: '4px' } })
-                        ], { style: { flexGrow: 1, gap: 1 } })
+                        ], { style: { flexGrow: 1, gap: 1, minWidth: 0 } })
                     ], { style: { gap: 3, alignItems: 'start' } }),
                     
                     ...(replyingToCommentId.get() === comment.id ? [
                         tray.stack([
+                            renderToolbar(replyInputRef),
                             tray.input({ placeholder: "Write a reply...", fieldRef: replyInputRef }),
                             tray.flex([
                                 tray.button({ label: isSubmitting.get() ? "Sending..." : "Send", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-${comment.id}`, () => handlePostReply(replyInputRef.current!, comment.id)) }),
                                 tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
                             ], { style: { gap: 2, justifyContent: 'flex-end' }})
-                        ], { style: { marginTop: '8px', marginLeft: '40px' }})
+                        ], { style: { marginTop: '8px', marginLeft: '44px' } })
                     ] : []),
 
                     ...(comment.childComments && comment.childComments.length > 0 ?
-                        [tray.div(comment.childComments.map(child => renderComment(child)), { style: { marginLeft: '20px', borderLeft: '2px solid #4A5568', paddingLeft: '10px' } })]
+                        [tray.div(comment.childComments.map(child => renderComment(child)), { style: { marginLeft: '12px', borderLeft: '2px solid #4A5568', paddingLeft: '16px' } })]
                         : [])
-                ], { style: { borderTop: '1px solid #333', paddingTop: '10px', marginTop: '10px', opacity: comment.isOptimistic ? 0.6 : 1 } });
+                ], { style: { borderTop: '1px solid #2D3748', paddingTop: '12px', marginTop: '12px', opacity: comment.isOptimistic ? 0.6 : 1 } });
             };
 
             if (view.get() === 'thread' && selectedThread.get()) {
                 const thread = selectedThread.get()!;
                 return tray.stack([
                     tray.flex([
-                        tray.button({ label: "< Back", intent: "primary-subtle", size: "sm", onClick: "back-to-list" }),
+                        tray.button({ label: "< Back", intent: "gray-subtle", size: "sm", onClick: "back-to-list" }),
                         tray.button({
                             label: "Open in Browser 🔗",
-                            intent: "primary-subtle",
+                            intent: "gray-subtle",
                             size: "sm",
                             onClick: ctx.eventHandler(`open-browser-${thread.id}`, () => {
-                                if (thread.siteUrl) {
-                                    try {
-                                        let command: string;
-                                        let args: string[];
-                                        if ($os.platform === 'windows') {
-                                            command = 'cmd';
-                                            args = ['/C', 'start', thread.siteUrl];
-                                        } else if ($os.platform === 'darwin') {
-                                            command = 'open';
-                                            args = [thread.siteUrl];
-                                        } else {
-                                            command = 'xdg-open';
-                                            args = [thread.siteUrl];
-                                        }
-                                        const cmd = $osExtra.asyncCmd(command, ...args);
-                                        cmd.run(() => {});
-                                    } catch (e: any) {
-                                        error.set("Failed to open URL. " + e.message);
-                                    }
-                                }
+                                if (thread.siteUrl) openUrlInBrowser(thread.siteUrl);
                             })
                         })
-                    ], { style: { justifyContent: 'space-between', alignItems: 'center' } }),
-                    tray.text({ text: thread.title, weight: "semibold", size: "lg", align: "center" }),
-                    tray.div([], { style: { borderTop: '1px solid #333', marginTop: '10px', marginBottom: '10px' } }),
-
-                    isReplyingToThread.get()
-                        ? tray.stack([
-                            tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef }),
-                            tray.flex([
-                                tray.button({ label: isSubmitting.get() ? "Sending..." : "Post Comment", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-thread`, () => handlePostReply(replyInputRef.current!)) }),
-                                tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
-                            ], { style: { gap: 2, justifyContent: 'flex-end' }})
-                        ], { style: { marginTop: '8px' }})
-                        : tray.button({ label: "Post a new comment", intent: "primary-subtle", onClick: ctx.eventHandler(`reply-to-thread`, () => {
-                            isReplyingToThread.set(true); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null);
-                        }) }),
-
-                    isLoading.get() && !comments.get() ? tray.text("Loading comments...") : (comments.get() ? comments.get()!.map(comment => renderComment(comment)) : tray.text("No comments found."))
-                ]);
+                    ], { style: { justifyContent: 'space-between', alignItems: 'center', paddingBottom: '8px', flexShrink: 0 } }),
+                    
+                    tray.div([
+                        tray.text({ text: thread.title, weight: "semibold", size: "lg", align: "center" }),
+                        tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '10px', marginBottom: '10px' } }),
+                        isReplyingToThread.get()
+                            ? tray.stack([
+                                renderToolbar(replyInputRef),
+                                tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef }),
+                                tray.flex([
+                                    tray.button({ label: isSubmitting.get() ? "Sending..." : "Post Comment", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-thread`, () => handlePostReply(replyInputRef.current!)) }),
+                                    tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
+                                ], { style: { gap: 2, justifyContent: 'flex-end' }})
+                            ], { style: { marginTop: '8px' }})
+                            : tray.button({ label: "Post a new comment", intent: "primary", onClick: ctx.eventHandler(`reply-to-thread`, () => {
+                                isReplyingToThread.set(true); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null);
+                            }) }),
+                        
+                        isLoading.get() && !comments.get() ? tray.text("Loading comments...") : (comments.get() ? comments.get()!.map(comment => renderComment(comment)) : tray.text("No comments found."))
+                    ], { style: { flexGrow: 1, overflowY: 'auto', paddingRight: '8px' } })
+                ], { style: { height: '100%', display: 'flex', flexDirection: 'column' } });
             }
 
             const threadList = threads.get();
             if (threadList) {
-                const episodeThreads = threadList.filter(t => t.isEpisode).sort((a, b) => a.episodeNumber - b.episodeNumber);
-                const generalThreads = threadList.filter(t => !t.isEpisode);
-                
-                return tray.stack([
-                    tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
-                    ...episodeThreads.map(thread =>
-                        tray.button({
-                            label: `Episode ${thread.episodeNumber} Discussion`, intent: "primary-subtle",
-                            onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); })
-                        })
-                    ),
-                    ...(generalThreads.length > 0 ? [tray.div([], { style: { borderTop: '1px solid #333', marginTop: '10px', marginBottom: '10px' } })] : []),
-                    ...(generalThreads.length > 0 ? [tray.text({ text: "General Discussions", size: "lg", align: "center", weight: "semibold" })] : []),
-                    ...generalThreads.map(thread =>
-                        tray.button({
-                            label: `(${thread.replyCount}) ${thread.title}`, intent: "primary-subtle",
-                            onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); })
-                        })
-                    )
-                ]);
+                return tray.div([
+                    tray.stack([
+                        tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
+                        ...threadList.filter(t => t.isEpisode).sort((a, b) => a.episodeNumber - b.episodeNumber).map(thread =>
+                            tray.button({
+                                label: `Episode ${thread.episodeNumber} Discussion`, intent: "primary-subtle",
+                                onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); })
+                            })
+                        ),
+                        ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '10px', marginBottom: '10px' } })] : []),
+                        ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.text({ text: "General Discussions", size: "lg", align: "center", weight: "semibold" })] : []),
+                        ...threadList.filter(t => !t.isEpisode).map(thread =>
+                            tray.button({
+                                label: `(${thread.replyCount}) ${thread.title}`, intent: "primary-subtle",
+                                onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); })
+                            })
+                        )
+                    ])
+                ], { style: { height: '100%', overflowY: 'auto', paddingRight: '8px' } });
             }
             return tray.stack([tray.text("No discussions found for this entry.")]);
         });
