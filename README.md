@@ -1,6 +1,6 @@
 # Anilist Discussions for Seanime
 
-![Anilist Discussions Icon](https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Icons/ad-Icon.png)
+<img src="https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Icons/ad-Icon.png" alt="Anilist Discussions Icon" width="200"/>
 
 Bring AniList forum discussions directly into your Seanime experience. 
 This plugin adds a dedicated tray icon that opens a fully-featured discussion panel, allowing you to read, post, and interact with the AniList community without ever leaving the app.
@@ -25,9 +25,7 @@ This plugin adds a dedicated tray icon that opens a fully-featured discussion pa
 
 ## 📺 Showcase
 
-*(It is highly recommended to add a screenshot or a short GIF here showing the plugin in action!)*
-
-`![Plugin Showcase](link_to_your_screenshot.png)`
+![Showcase 1](https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Gifs/Showcase1.gif)
 
 ## ⚙️ Installation
 
