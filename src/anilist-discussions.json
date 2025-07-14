@@ -1,0 +1,46 @@
+{
+    "id": "anilist-discussions",
+    "name": "AniList Discussions",
+    "version": "2.0.0",
+    "manifestURI": "",
+    "language": "typescript",
+    "type": "plugin",
+    "description": "Read AniList discussions inside Seanime.",
+    "author": "Bas1874",
+    "icon": "",
+    "website": "",
+    "lang": "multi",
+    "payloadURI": "C:/Users/Bas/AppData/Roaming/Seanime/extensions/Discussions/my-plugin.ts",
+    "plugin": {
+        "version": "1",
+        "permissions": {
+            "scopes": [
+                "anilist",
+                "database",
+                "anilist-token",
+                "system"
+            ]
+        },
+        "systemAllowList": {
+            "commandScopes": [
+                {
+                    "command": "open",
+                    "args": [{ "validator": "^https?://.*$" }]
+                },
+                {
+                    "command": "xdg-open",
+                    "args": [{ "validator": "^https?://.*$" }]
+                },
+                {
+                    "command": "cmd",
+                    "args": [
+                        { "value": "/C" },
+                        { "value": "start" },
+                        { "validator": "^https?://.*$" }
+                    ]
+                }
+            ]
+        }
+    },
+    "isDevelopment": false
+}
