@@ -414,7 +414,7 @@ function init() {
         // --- TRAY SETUP & EVENT HANDLING ---
         const tray = ctx.newTray({
             tooltipText: "Discussions",
-            iconUrl: "https://raw.githubusercontent.com/5rahim/seanime/main/public/icons/discussion.svg",
+            iconUrl: "https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Icons/ad-Icon.png",
             withContent: true,
             width: '850px',
             height: '90vh'
