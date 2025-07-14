@@ -21,7 +21,6 @@ interface ThreadComment {
     childComments?: ThreadComment[];
     isOptimistic?: boolean;
 }
-// NEW: Expanded segment types for rich text formatting
 interface CommentSegment {
     type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br';
     content: string;
@@ -451,20 +450,21 @@ function init() {
         }
         
         function renderSegment(segment: CommentSegment, key: string) {
+            const textStyle = { wordBreak: 'normal' as const, overflowWrap: 'break-word' as const };
              switch (segment.type) {
-                case 'text': return tray.text(segment.content);
+                case 'text': return tray.text({text: segment.content, style: textStyle});
                 case 'br': return tray.div([], { style: { height: '0.5em', width: '100%' } }); 
-                case 'bold': return tray.text({ text: segment.content, weight: 'bold' });
-                case 'italic': return tray.text({ text: segment.content, style: { fontStyle: 'italic' } });
-                case 'strike': return tray.text({ text: segment.content, style: { textDecoration: 'line-through' } });
-                case 'heading': return tray.text({ text: segment.content, size: 'lg', weight: 'semibold' });
+                case 'bold': return tray.text({ text: segment.content, weight: 'bold', style: textStyle });
+                case 'italic': return tray.text({ text: segment.content, style: { fontStyle: 'italic', ...textStyle } });
+                case 'strike': return tray.text({ text: segment.content, style: { textDecoration: 'line-through', ...textStyle } });
+                case 'heading': return tray.text({ text: segment.content, size: 'lg', weight: 'semibold', style: textStyle });
                 case 'hr': return tray.div([], { style: { borderTop: '1px solid #4A5568', margin: '8px 0' } });
-                case 'blockquote': return tray.div([tray.text(segment.content)], { style: { borderLeft: '3px solid #4A5568', paddingLeft: '8px', color: '#A0AEC0', fontStyle: 'italic' }});
-                case 'inline-code': return tray.text({ text: segment.content, style: { fontFamily: 'monospace', backgroundColor: '#2D3748', padding: '2px 4px', borderRadius: '4px' } });
-                case 'code-block': return tray.div([tray.text(segment.content)], { style: { fontFamily: 'monospace', backgroundColor: '#1A202C', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap', width: '100%' } });
+                case 'blockquote': return tray.div([tray.text({text: segment.content, style:textStyle})], { style: { borderLeft: '3px solid #4A5568', paddingLeft: '8px', color: '#A0AEC0', fontStyle: 'italic' }});
+                case 'inline-code': return tray.text({ text: segment.content, style: { fontFamily: 'monospace', backgroundColor: '#2D3748', padding: '2px 4px', borderRadius: '4px', ...textStyle } });
+                case 'code-block': return tray.div([tray.text({text: segment.content, style: textStyle})], { style: { fontFamily: 'monospace', backgroundColor: '#1A202C', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap', width: '100%' } });
                 case 'spoiler':
                     return revealedSpoilers.get()[key]
-                        ? tray.text({ text: segment.content, style: { background: '#2D3748', padding: '2px 4px', borderRadius: '4px' } })
+                        ? tray.text({ text: segment.content, style: { background: '#2D3748', padding: '2px 4px', borderRadius: '4px', ...textStyle } })
                         : tray.button({ label: "[Spoiler]", intent: "primary-subtle", size: "sm", onClick: ctx.eventHandler(key, () => revealedSpoilers.set(s => ({ ...s, [key]: true }))) });
                 case 'image':
                     return tray.stack([
@@ -517,7 +517,7 @@ function init() {
                             tray.button({ label: "Yes", intent: "alert", onClick: ctx.eventHandler(`confirm-delete-${comment.id}`, () => handleDeleteComment(comment.id)) }),
                             tray.button({ label: "No", intent: "gray", onClick: "cancel-delete" })
                         ], { style: { gap: 3, alignItems: 'center', justifyContent: 'center' } })
-                    ], { style: { borderTop: '1px solid #4A5568', paddingTop: '12px', marginTop: '12px' } });
+                    ], { style: { borderTop: '1px solid #2D3748', paddingTop: '12px', marginTop: '12px' } });
                 }
                 
                 if (isEditingThisComment) {
@@ -530,7 +530,7 @@ function init() {
                                 tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-edit" })
                             ], { style: { gap: 2, justifyContent: 'flex-end' }})
                         ], { style: { marginTop: '8px' }})
-                    ], { style: { borderTop: '1px solid #4A5568', paddingTop: '12px', marginTop: '12px' } });
+                    ], { style: { borderTop: '1px solid #2D3748', paddingTop: '12px', marginTop: '12px' } });
                 }
 
                 const segments = parseComment(comment.comment);
@@ -562,7 +562,7 @@ function init() {
                                 tray.text({ text: comment.user.name, weight: "semibold", style: { whiteSpace: 'nowrap' } }),
                                 tray.text({ text: formatTimeAgo(comment.createdAt), size: "sm", color: "gray", style: { fontStyle: 'italic', marginLeft: '8px', whiteSpace: 'nowrap' } })
                             ], { style: { alignItems: 'baseline', alignSelf: 'flex-start' } }),
-                            tray.div(segments.map((segment, index) => renderSegment(segment, `${comment.id}-${index}`)), { style: { flexWrap: 'wrap', alignItems: 'center', gap: '2px', lineHeight: '1.6' } }),
+                            tray.div(segments.map((segment, index) => renderSegment(segment, `${comment.id}-${index}`)), { style: { flexWrap: 'wrap', alignItems: 'center', gap: '2px', lineHeight: '1.6'} }),
                             tray.flex(actionButtons, { style: { gap: 2, marginTop: '4px' } })
                         ], { style: { flexGrow: 1, gap: 1, minWidth: 0 } })
                     ], { style: { gap: 3, alignItems: 'start' } }),
@@ -579,7 +579,7 @@ function init() {
                     ] : []),
 
                     ...(comment.childComments && comment.childComments.length > 0 ?
-                        [tray.div(comment.childComments.map(child => renderComment(child)), { style: { marginLeft: '12px', borderLeft: '2px solid #4A5568', paddingLeft: '16px' } })]
+                        [tray.div(comment.childComments.map(child => renderComment(child)), { style: { marginLeft: '12px', borderLeft: '2px solid #2D3748', paddingLeft: '16px' } })]
                         : [])
                 ], { style: { borderTop: '1px solid #2D3748', paddingTop: '12px', marginTop: '12px', opacity: comment.isOptimistic ? 0.6 : 1 } });
             };
