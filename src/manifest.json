@@ -1,11 +1,11 @@
 {
     "id": "anilist-discussions",
     "name": "AniList Discussions",
-    "version": "0.0.1",
+    "version": "0.1.1",
     "manifestURI": "https://raw.githubusercontent.com/Bas1874/anilist-discussion/refs/heads/main/src/manifest.json",
     "language": "typescript",
     "type": "plugin",
-    "description": "Read AniList discussions inside Seanime.",
+    "description": "Read/Post AniList discussions inside Seanime.",
     "author": "Bas1874",
     "icon": "https://raw.githubusercontent.com/Bas1874/anilist-discussion/main/src/Icons/ad-Icon.png",
     "website": "",
