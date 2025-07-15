@@ -4,12 +4,22 @@
 /// <reference path="./core.d.ts" />
 
 // Interfaces to define our data structures
-interface Thread {
-    id: number; title: string; replyCount: number; isEpisode: boolean; episodeNumber: number; siteUrl: string;
-}
 interface User {
     name: string;
     avatar: { large: string; };
+}
+interface Thread {
+    id: number;
+    title: string;
+    body: string; 
+    createdAt: number; 
+    replyCount: number;
+    siteUrl: string;
+    isEpisode: boolean;
+    episodeNumber: number;
+    user: User;
+    replyUser: User | null;
+    repliedAt: number;
 }
 interface ThreadComment {
     id: number;
@@ -26,10 +36,9 @@ interface CommentSegment {
     content: string;
 }
 
-
 function init() {
     $ui.register((ctx) => {
-    
+
         // --- HELPER FUNCTIONS ---
 
         function openUrlInBrowser(url: string) {
@@ -53,6 +62,14 @@ function init() {
             }
         }
         
+        function decodeHtmlEntities(text: string): string {
+            if (!text) return "";
+            // FIX: Use String.fromCodePoint() to correctly handle high-value unicode characters like emojis.
+            return text.replace(/&#(\d+);/g, (match, dec) => {
+                return String.fromCodePoint(dec);
+            }).replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
+        }
+
         function parseComment(text: string): CommentSegment[] {
             if (!text) return [];
 
@@ -121,6 +138,7 @@ function init() {
         }
 
         function formatTimeAgo(timestamp: number): string {
+            if (!timestamp) return "";
             const now = Date.now();
             const seconds = Math.floor((now - (timestamp * 1000)) / 1000);
             if (seconds < 30) return "just now";
@@ -157,18 +175,67 @@ function init() {
         const replyInputRef = ctx.fieldRef<string>("");
         const editInputRef = ctx.fieldRef<string>("");
         const linkToConfirm = ctx.state<string | null>(null);
+        const commentSort = ctx.state<'ID' | 'ID_DESC'>('ID_DESC');
+        const commentsPage = ctx.state(1);
+        const commentsHasNextPage = ctx.state(false);
+
+        
+        // --- API SERVICE (ABSTRACTION) ---
+        const anilistApi = {
+            _fetch: async function(query: string, variables: any) {
+                const token = $database.anilist.getToken();
+                if (!token) throw new Error("Not authenticated with AniList.");
+                const res = await ctx.fetch("https://graphql.anilist.co", {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ query, variables })
+                });
+                if (!res.ok) throw new Error(`AniList API Error: ${res.status}`);
+                const json = await res.json();
+                if (json.errors) throw new Error(json.errors.map((e: any) => e.message).join(', '));
+                return json.data;
+            },
+            fetchViewer: async function() {
+                const query = `query { Viewer { name, avatar { large } } }`;
+                const data = await this._fetch(query, {});
+                return data.Viewer;
+            },
+            fetchThreads: async function(mediaId: number) {
+                const query = `query ($mediaCategoryId: Int) { Page(page: 1, perPage: 50) { threads(mediaCategoryId: $mediaCategoryId, sort: [REPLY_COUNT_DESC]) { id, title, body, createdAt, replyCount, siteUrl, repliedAt, user { name, avatar { large } }, replyUser { name } } } }`;
+                const data = await this._fetch(query, { mediaCategoryId: mediaId });
+                return (data.Page.threads || []).map((thread: any) => {
+                    const match = thread.title.match(/Episode (\d+)/i);
+                    return { ...thread, isEpisode: !!match, episodeNumber: match ? parseInt(match[1], 10) : 0 };
+                });
+            },
+            fetchComments: async function(threadId: number, page: number) {
+                const query = `query ($threadId: Int, $page: Int) { Page(page: $page, perPage: 25) { pageInfo { hasNextPage, currentPage }, threadComments(threadId: $threadId) { id, comment(asHtml: false), createdAt, likeCount, isLiked, user { name, avatar { large } }, childComments } } }`;
+                const data = await this._fetch(query, { threadId, page });
+                const parsed = (data.Page.threadComments || []).map((c: any) => ({ ...c, childComments: c.childComments || [] }));
+                return { comments: parsed, pageInfo: data.Page.pageInfo };
+            },
+            toggleLike: function(commentId: number) {
+                const mutation = `mutation ($id: Int, $type: LikeableType) { ToggleLike(id: $id, type: $type) { ... on ThreadComment { id } } }`;
+                this._fetch(mutation, { id: commentId, type: "THREAD_COMMENT" }).catch(e => console.error("Like mutation failed:", e));
+            },
+            saveComment: async function(variables: { threadId: number, comment: string, parentCommentId?: number, id?: number }) {
+                const mutation = `mutation ($id: Int, $threadId: Int, $parentCommentId: Int, $comment: String) { SaveThreadComment(id: $id, threadId: $threadId, parentCommentId: $parentCommentId, comment: $comment) { id, comment, createdAt, likeCount, isLiked, user { name, avatar { large } } } }`;
+                const data = await this._fetch(mutation, variables);
+                return data.SaveThreadComment;
+            },
+            deleteComment: async function(commentId: number) {
+                const mutation = `mutation ($id: Int) { DeleteThreadComment(id: $id) { deleted } }`;
+                const data = await this._fetch(mutation, { id: commentId });
+                return data.DeleteThreadComment.deleted;
+            }
+        };
 
         // --- DATA FETCHING & MUTATIONS ---
         const fetchViewer = async () => {
             if (currentUser.get()) return;
             try {
-                const query = `query { Viewer { name, avatar { large } } }`;
-                const token = $database.anilist.getToken();
-                if (!token) return;
-                const res = await ctx.fetch("https://graphql.anilist.co", { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: { query } });
-                if (!res.ok) throw new Error(`API returned status ${res.status}`);
-                const json = await res.json();
-                if (json.data.Viewer) currentUser.set(json.data.Viewer);
+                const viewer = await anilistApi.fetchViewer();
+                if (viewer) currentUser.set(viewer);
             } catch (e: any) { console.error("Failed to fetch viewer info:", e.message); }
         };
 
@@ -176,40 +243,31 @@ function init() {
             if (threads.get() !== null && !isLoading.get()) return;
             isLoading.set(true); error.set(null);
             try {
-                const query = `query ($mediaCategoryId: Int) { Page(page: 1, perPage: 50) { threads(mediaCategoryId: $mediaCategoryId, sort: [REPLY_COUNT_DESC]) { id, title, replyCount, siteUrl } } }`;
-                const token = $database.anilist.getToken();
-                if (!token) throw new Error("AniList token not found.");
-                const res = await ctx.fetch("https://graphql.anilist.co", {
-                    method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: { query, variables: { mediaCategoryId: mediaId } }
-                });
-                if (!res.ok) throw new Error(`API returned status ${res.status}`);
-                const json = await res.json();
-                if (json.errors) throw new Error(json.errors.map((e: any) => e.message).join(', '));
-                const processedThreads = (json.data.Page.threads || []).map((thread: any) => {
-                    const match = thread.title.match(/Episode (\d+)/i);
-                    return { ...thread, isEpisode: !!match, episodeNumber: match ? parseInt(match[1], 10) : 0 };
-                });
+                const processedThreads = await anilistApi.fetchThreads(mediaId);
                 threads.set(processedThreads);
             } catch (e: any) { error.set(e.message); }
             finally { isLoading.set(false); }
         };
         
-        const fetchComments = async (threadId: number) => {
-            isLoading.set(true); error.set(null); comments.set(null);
+        const fetchComments = async (threadId: number, page: number = 1) => {
+            isLoading.set(true); error.set(null);
+            if (page === 1) comments.set(null);
+            
             try {
-                const query = `query ($threadId: Int) { Page(page: 1, perPage: 50) { threadComments(threadId: $threadId, sort: ID) { id, comment, createdAt, likeCount, isLiked, user { name, avatar { large } }, childComments } } }`;
-                const token = $database.anilist.getToken();
-                if (!token) throw new Error("AniList token not found.");
-                const res = await ctx.fetch("https://graphql.anilist.co", {
-                    method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: { query, variables: { threadId: threadId } }
-                });
-                if (!res.ok) throw new Error(`API returned status ${res.status}`);
-                const json = await res.json();
-                if (json.errors) throw new Error(json.errors.map((e: any) => e.message).join(', '));
-                const parsedComments = json.data.Page.threadComments.map((comment: any) => ({ ...comment, childComments: comment.childComments || [] }));
-                comments.set(parsedComments || []);
+                const { comments: newComments, pageInfo } = await anilistApi.fetchComments(threadId, page);
+                
+                let combinedComments = page > 1 ? [...(comments.get() || []), ...newComments] : newComments;
+                
+                const sortOrder = commentSort.get();
+                if (sortOrder === 'ID_DESC') {
+                    combinedComments.sort((a, b) => b.id - a.id);
+                } else {
+                    combinedComments.sort((a, b) => a.id - b.id);
+                }
+
+                comments.set(combinedComments);
+                commentsPage.set(pageInfo.currentPage);
+                commentsHasNextPage.set(pageInfo.hasNextPage);
             } catch (e: any) { error.set(e.message); }
             finally { isLoading.set(false); }
         };
@@ -220,193 +278,87 @@ function init() {
                     if (comment.id === commentId) {
                         return { ...comment, isLiked: !comment.isLiked, likeCount: comment.isLiked ? comment.likeCount - 1 : comment.likeCount + 1 };
                     }
-                    if (comment.childComments && comment.childComments.length > 0) {
+                    if (comment.childComments) {
                         return { ...comment, childComments: updateCommentInTree(comment.childComments) };
                     }
                     return comment;
                 });
             };
             comments.set(updateCommentInTree(comments.get() || []));
-
-            const mutation = `mutation ($id: Int, $type: LikeableType) { ToggleLikeV2(id: $id, type: $type) { ... on ThreadComment { id } } }`;
-            const token = $database.anilist.getToken();
-            if (token) {
-                ctx.fetch("https://graphql.anilist.co", {
-                    method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: { query: mutation, variables: { id: commentId, type: "THREAD_COMMENT" } }
-                }).catch(e => console.error("Like mutation failed:", e));
-            }
+            anilistApi.toggleLike(commentId);
         };
 
-        const handlePostReply = (text: string, parentCommentId?: number) => {
+        const handlePostReply = async (text: string, parentCommentId?: number) => {
             const threadId = selectedThread.get()?.id;
             if (!threadId || !text || isSubmitting.get()) return;
 
-            isSubmitting.set(true);
-            error.set(null);
+            isSubmitting.set(true); error.set(null);
             
             const me = currentUser.get();
             if (!me) { error.set("Cannot post reply, user data not loaded."); isSubmitting.set(false); return; }
 
             const temporaryId = Date.now();
-            const newComment: ThreadComment = {
-                id: temporaryId,
-                comment: text,
-                createdAt: Math.floor(Date.now() / 1000),
-                likeCount: 0,
-                isLiked: false,
-                user: me,
-                childComments: [],
-                isOptimistic: true,
-            };
+            const newComment: ThreadComment = { id: temporaryId, comment: text, createdAt: Math.floor(Date.now() / 1000), likeCount: 0, isLiked: false, user: me, childComments: [], isOptimistic: true, };
 
-            const addReplyToTree = (commentList: ThreadComment[], pId: number): ThreadComment[] => {
-                return commentList.map(comment => {
-                    if (comment.id === pId) return { ...comment, childComments: [...(comment.childComments || []), newComment] };
-                    if (comment.childComments) return { ...comment, childComments: addReplyToTree(comment.childComments, pId) };
-                    return comment;
-                });
-            };
-
+            const addReplyToTree = (commentList: ThreadComment[], pId: number): ThreadComment[] => commentList.map(c => c.id === pId ? { ...c, childComments: [...(c.childComments || []), newComment] } : (c.childComments ? { ...c, childComments: addReplyToTree(c.childComments, pId) } : c));
+            
             const currentComments = comments.get() || [];
-            if (parentCommentId) {
-                comments.set(addReplyToTree(currentComments, parentCommentId));
-            } else {
-                comments.set([newComment, ...currentComments]);
-            }
+            if (parentCommentId) comments.set(addReplyToTree(currentComments, parentCommentId));
+            else comments.set([newComment, ...currentComments]);
             
-            const mutation = `mutation ($threadId: Int!, $parentCommentId: Int, $comment: String) { SaveThreadComment(threadId: $threadId, parentCommentId: $parentCommentId, comment: $comment) { id, comment, createdAt, likeCount, isLiked, user { name, avatar { large } } } }`;
-            const token = $database.anilist.getToken();
-            
-            const variables: { threadId: number; comment: string; parentCommentId?: number } = {
-                threadId: threadId,
-                comment: text,
-            };
-            if (parentCommentId) {
-                variables.parentCommentId = parentCommentId;
-            }
-
-            if (token) {
-                ctx.fetch("https://graphql.anilist.co", {
-                    method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: { query: mutation, variables: variables }
-                })
-                .then(res => res.json())
-                .then(json => {
-                    if (json.errors) throw new Error(json.errors.map((e: any) => e.message).join(', '));
-                    const realComment = json.data.SaveThreadComment;
-                    const replaceInTree = (commentList: ThreadComment[]): ThreadComment[] => {
-                        return commentList.map(comment => {
-                            if (comment.id === temporaryId) return { ...realComment, childComments: [] };
-                            if (comment.childComments) return { ...comment, childComments: replaceInTree(comment.childComments) };
-                            return comment;
-                        });
-                    };
-                    comments.set(replaceInTree(comments.get() || []));
-                })
-                .catch(e => {
-                    error.set("Failed to send reply.");
-                    const removeInTree = (commentList: ThreadComment[]): ThreadComment[] => {
-                        return commentList.filter(comment => comment.id !== temporaryId).map(comment => {
-                            if (comment.childComments) return { ...comment, childComments: removeInTree(comment.childComments) };
-                            return comment;
-                        });
-                    };
-                    comments.set(removeInTree(comments.get() || []));
-                })
-                .finally(() => {
-                    isSubmitting.set(false);
-                    replyingToCommentId.set(null);
-                    isReplyingToThread.set(false);
-                    replyInputRef.setValue("");
-                });
+            try {
+                const realComment = await anilistApi.saveComment({ threadId, comment: text, parentCommentId });
+                const replaceInTree = (commentList: ThreadComment[]): ThreadComment[] => commentList.map(c => c.id === temporaryId ? { ...realComment, childComments: [] } : (c.childComments ? { ...c, childComments: replaceInTree(c.childComments) } : c));
+                comments.set(replaceInTree(comments.get() || []));
+            } catch (e: any) {
+                error.set("Failed to send reply.");
+                const removeInTree = (commentList: ThreadComment[]): ThreadComment[] => commentList.filter(c => c.id !== temporaryId).map(c => c.childComments ? { ...c, childComments: removeInTree(c.childComments) } : c);
+                comments.set(removeInTree(comments.get() || []));
+            } finally {
+                isSubmitting.set(false);
+                replyingToCommentId.set(null);
+                isReplyingToThread.set(false);
+                replyInputRef.setValue("");
             }
         };
 
-        const handleEditComment = (commentId: number, newText: string) => {
+        const handleEditComment = async (commentId: number, newText: string) => {
             const threadId = selectedThread.get()?.id;
             if (!threadId || !newText || isSubmitting.get()) return;
 
-            isSubmitting.set(true);
-            error.set(null);
+            isSubmitting.set(true); error.set(null);
 
             let originalText = "";
-            const findAndUpdateInTree = (commentList: ThreadComment[]): ThreadComment[] => {
-                return commentList.map(comment => {
-                    if (comment.id === commentId) {
-                        originalText = comment.comment;
-                        return { ...comment, comment: newText };
-                    }
-                    if (comment.childComments) {
-                        return { ...comment, childComments: findAndUpdateInTree(comment.childComments) };
-                    }
-                    return comment;
-                });
-            };
+            const findAndUpdateInTree = (list: ThreadComment[]): ThreadComment[] => list.map(c => c.id === commentId ? (originalText = c.comment, { ...c, comment: newText }) : (c.childComments ? { ...c, childComments: findAndUpdateInTree(c.childComments) } : c));
             comments.set(findAndUpdateInTree(comments.get() || []));
             editingCommentId.set(null);
 
-            const mutation = `mutation ($id: Int, $threadId: Int, $comment: String) { SaveThreadComment(id: $id, threadId: $threadId, comment: $comment) { id, comment } }`;
-            const token = $database.anilist.getToken();
-
-            if (token) {
-                ctx.fetch("https://graphql.anilist.co", {
-                    method: 'POST',
-                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: { query: mutation, variables: { id: commentId, threadId: threadId, comment: newText } }
-                }).then(res => res.json()).then(json => {
-                    if (json.errors) throw new Error(json.errors.map((e: any) => e.message).join(', '));
-                }).catch(e => {
-                    error.set("Failed to edit comment.");
-                    const rollbackInTree = (commentList: ThreadComment[]): ThreadComment[] => {
-                        return commentList.map(comment => {
-                            if (comment.id === commentId) return { ...comment, comment: originalText };
-                            if (comment.childComments) return { ...comment, childComments: rollbackInTree(comment.childComments) };
-                            return comment;
-                        });
-                    };
-                    comments.set(rollbackInTree(comments.get() || []));
-                }).finally(() => {
-                    isSubmitting.set(false);
-                });
+            try {
+                await anilistApi.saveComment({ id: commentId, threadId, comment: newText });
+            } catch (e: any) {
+                error.set("Failed to edit comment.");
+                const rollbackInTree = (list: ThreadComment[]): ThreadComment[] => list.map(c => c.id === commentId ? { ...c, comment: originalText } : (c.childComments ? { ...c, childComments: rollbackInTree(c.childComments) } : c));
+                comments.set(rollbackInTree(comments.get() || []));
+            } finally {
+                isSubmitting.set(false);
             }
         };
         
-        const handleDeleteComment = (commentId: number) => {
+        const handleDeleteComment = async (commentId: number) => {
             if (isSubmitting.get()) return;
-            isSubmitting.set(true);
-            error.set(null);
+            isSubmitting.set(true); error.set(null);
 
-            const removeCommentFromTree = (commentList: ThreadComment[]): ThreadComment[] => {
-                return commentList
-                    .filter(comment => comment.id !== commentId)
-                    .map(comment => {
-                        if (comment.childComments) {
-                            return { ...comment, childComments: removeCommentFromTree(comment.childComments) };
-                        }
-                        return comment;
-                    });
-            };
+            const removeCommentFromTree = (list: ThreadComment[]): ThreadComment[] => list.filter(c => c.id !== commentId).map(c => c.childComments ? { ...c, childComments: removeCommentFromTree(c.childComments) } : c);
             comments.set(removeCommentFromTree(comments.get() || []));
             deletingCommentId.set(null);
 
-            const mutation = `mutation ($id: Int) { DeleteThreadComment(id: $id) { deleted } }`;
-            const token = $database.anilist.getToken();
-
-            if (token) {
-                ctx.fetch("https://graphql.anilist.co", {
-                    method: 'POST',
-                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: { query: mutation, variables: { id: commentId } }
-                }).then(res => res.json()).then(json => {
-                    if (json.errors || !json.data.DeleteThreadComment.deleted) {
-                        throw new Error(json.errors ? json.errors.map((e: any) => e.message).join(', ') : "Deletion failed on server.");
-                    }
-                }).catch(e => {
-                    error.set("Failed to delete comment. Please refresh.");
-                }).finally(() => {
-                    isSubmitting.set(false);
-                });
+            try {
+                const success = await anilistApi.deleteComment(commentId);
+                if (!success) throw new Error("Deletion failed on server.");
+            } catch (e: any) {
+                error.set("Failed to delete comment. Please refresh.");
+            } finally {
+                isSubmitting.set(false);
             }
         };
 
@@ -419,23 +371,25 @@ function init() {
             height: '90vh'
         });
         tray.onOpen(() => { fetchViewer(); if (currentMediaId.get()) fetchThreads(currentMediaId.get()!); });
-        ctx.effect(() => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id); }, [selectedThread]);
+        ctx.effect(() => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id, 1); }, [selectedThread, commentSort]);
         ctx.registerEventHandler("back-to-list", () => {
-            view.set('list'); selectedThread.set(null); comments.set(null); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false);
+            view.set('list'); selectedThread.set(null); comments.set(null); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); commentsPage.set(1); commentsHasNextPage.set(false);
         });
-        ctx.registerEventHandler("cancel-reply", () => {
-            replyingToCommentId.set(null); isReplyingToThread.set(false); replyInputRef.setValue("");
-        });
-        ctx.registerEventHandler("cancel-edit", () => {
-            editingCommentId.set(null); editInputRef.setValue("");
-        });
-        ctx.registerEventHandler("cancel-delete", () => {
-            deletingCommentId.set(null);
-        });
+        ctx.registerEventHandler("cancel-reply", () => { replyingToCommentId.set(null); isReplyingToThread.set(false); replyInputRef.setValue(""); });
+        ctx.registerEventHandler("cancel-edit", () => { editingCommentId.set(null); editInputRef.setValue(""); });
+        ctx.registerEventHandler("cancel-delete", () => { deletingCommentId.set(null); });
+        ctx.registerEventHandler("load-more-comments", () => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id, commentsPage.get() + 1); });
         
         function renderToolbar(fieldRef: any) {
-            const wrapText = (chars: string) => {
-                fieldRef.setValue((fieldRef.current || "") + chars);
+            const wrapText = (chars: string, placeholder = "") => {
+                let current = fieldRef.current || "";
+                let [start, end] = [chars.length / 2, chars.length / 2];
+                if (placeholder) {
+                     current += placeholder;
+                     start = chars.indexOf(placeholder[0]);
+                     end = 1;
+                }
+                fieldRef.setValue(current.slice(0, start) + chars + current.slice(start));
             };
             return tray.flex([
                 tray.button({ label: 'B', onClick: ctx.eventHandler('tb-b', () => wrapText('____')), size: 'sm', intent: 'gray-subtle' }),
@@ -478,7 +432,31 @@ function init() {
                     return tray.button({ label: segment.content, intent: 'link', size: 'sm', onClick: ctx.eventHandler(key, () => linkToConfirm.set(segment.content)) });
             }
         }
-
+        
+        // --- SKELETON LOADERS ---
+        function renderCommentSkeleton() {
+            return tray.div([
+                tray.flex([
+                    tray.div([], { style: { width: '36px', height: '36px', borderRadius: '50%', backgroundColor: '#2D3748', flexShrink: 0 } }),
+                    tray.stack([
+                        tray.div([], { style: { height: '16px', width: '100px', backgroundColor: '#2D3748', borderRadius: '4px' } }),
+                        tray.div([], { style: { height: '30px', width: '80%', backgroundColor: '#2D3748', borderRadius: '4px', marginTop: '4px' } })
+                    ], { style: { flexGrow: 1, gap: 1 } })
+                ], { style: { gap: 3, alignItems: 'start', opacity: 0.5 } })
+            ], { style: { borderTop: '1px solid #2D3748', paddingTop: '12px', marginTop: '12px' } });
+        }
+        function renderThreadSkeleton() {
+            return tray.div([
+                tray.flex([
+                    tray.div([], { style: { width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#2D3748', flexShrink: 0 } }),
+                    tray.stack([
+                        tray.div([], { style: { height: '18px', width: '70%', backgroundColor: '#2D3748', borderRadius: '4px' } }),
+                        tray.div([], { style: { height: '14px', width: '50%', backgroundColor: '#2D3748', borderRadius: '4px', marginTop: '4px' } })
+                    ], { style: { flexGrow: 1, gap: 1 } })
+                ], { style: { gap: 3, alignItems: 'center', padding: '10px 0', opacity: 0.5 } })
+            ]);
+        }
+        
         // --- UI RENDERING ---
         tray.render(() => {
             const urlToConfirm = linkToConfirm.get();
@@ -488,21 +466,15 @@ function init() {
                         tray.text({ text: "Open external link?", weight: 'semibold', size: 'lg'}),
                         tray.text({ text: urlToConfirm, size: "sm", color: "gray", style: { wordBreak: 'break-all' } }),
                         tray.flex([
-                            tray.button({ label: "Yes, open", intent: "primary", onClick: ctx.eventHandler('confirm-open-link', () => {
-                                openUrlInBrowser(urlToConfirm);
-                                linkToConfirm.set(null);
-                            })}),
-                            tray.button({ label: "Cancel", intent: "gray", onClick: ctx.eventHandler('cancel-open-link', () => {
-                                linkToConfirm.set(null);
-                            })})
+                            tray.button({ label: "Yes, open", intent: "primary", onClick: ctx.eventHandler('confirm-open-link', () => { openUrlInBrowser(urlToConfirm); linkToConfirm.set(null); }) }),
+                            tray.button({ label: "Cancel", intent: "gray", onClick: ctx.eventHandler('cancel-open-link', () => { linkToConfirm.set(null); }) })
                         ], { style: { gap: 2, justifyContent: 'center', marginTop: '12px' }})
                     ], { style: { gap: 2, alignItems: 'center' }})
                 ], { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '20px' }});
             }
 
-
             if (!currentMediaId.get()) return tray.stack([tray.text("Navigate to an anime to see discussions.")]);
-            if (isLoading.get() && !threads.get()) return tray.stack([tray.text("Loading...")]);
+            if (isLoading.get() && !threads.get()) return tray.stack([renderThreadSkeleton(), renderThreadSkeleton(), renderThreadSkeleton()]);
             if (error.get()) return tray.stack([tray.text(error.get()!)]);
             
             const me = currentUser.get();
@@ -513,7 +485,7 @@ function init() {
                 if (isDeletingThisComment) {
                     return tray.div([
                         tray.flex([
-                            tray.text("Are you sure you want to delete this comment?"),
+                            tray.text("Are you sure?"),
                             tray.button({ label: "Yes", intent: "alert", onClick: ctx.eventHandler(`confirm-delete-${comment.id}`, () => handleDeleteComment(comment.id)) }),
                             tray.button({ label: "No", intent: "gray", onClick: "cancel-delete" })
                         ], { style: { gap: 3, alignItems: 'center', justifyContent: 'center' } })
@@ -524,7 +496,7 @@ function init() {
                     return tray.div([
                         tray.stack([
                             renderToolbar(editInputRef),
-                            tray.input({ placeholder: "Edit your comment...", fieldRef: editInputRef }),
+                            tray.input({ placeholder: "Edit your comment...", fieldRef: editInputRef, isTextarea: true, rows: 3 }),
                             tray.flex([
                                 tray.button({ label: isSubmitting.get() ? "Saving..." : "Save", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`save-edit-${comment.id}`, () => handleEditComment(comment.id, editInputRef.current!)) }),
                                 tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-edit" })
@@ -532,26 +504,17 @@ function init() {
                         ], { style: { marginTop: '8px' }})
                     ], { style: { borderTop: '1px solid #2D3748', paddingTop: '12px', marginTop: '12px' } });
                 }
+                
+                const decodedComment = decodeHtmlEntities(comment.comment);
+                const segments = parseComment(decodedComment);
 
-                const segments = parseComment(comment.comment);
                 const actionButtons = [
                     tray.button({ label: `♥ ${comment.likeCount}`, intent: comment.isLiked ? 'primary' : 'gray-subtle', size: 'sm', onClick: ctx.eventHandler(`like-comment-${comment.id}`, () => handleToggleLike(comment.id)) }),
                     tray.button({ label: `Reply`, intent: 'gray-subtle', size: 'sm', onClick: ctx.eventHandler(`reply-to-comment-${comment.id}`, () => { replyingToCommentId.set(comment.id); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); replyInputRef.setValue(""); })})
                 ];
                 if (me && comment.user.name === me.name) {
-                    actionButtons.push(tray.button({ label: 'Edit', intent: 'gray-subtle', size: 'sm', onClick: ctx.eventHandler(`edit-comment-${comment.id}`, () => {
-                        editingCommentId.set(comment.id);
-                        editInputRef.setValue(comment.comment.replace(/<br>/g, '\n'));
-                        replyingToCommentId.set(null);
-                        deletingCommentId.set(null);
-                        isReplyingToThread.set(false);
-                    })}));
-                    actionButtons.push(tray.button({ label: 'Delete', intent: 'alert-subtle', size: 'sm', onClick: ctx.eventHandler(`delete-comment-${comment.id}`, () => {
-                        deletingCommentId.set(comment.id);
-                        editingCommentId.set(null);
-                        replyingToCommentId.set(null);
-                        isReplyingToThread.set(false);
-                    })}));
+                    actionButtons.push(tray.button({ label: 'Edit', intent: 'gray-subtle', size: 'sm', onClick: ctx.eventHandler(`edit-comment-${comment.id}`, () => { editingCommentId.set(comment.id); editInputRef.setValue(comment.comment.replace(/<br>/g, '\n')); replyingToCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); })}));
+                    actionButtons.push(tray.button({ label: 'Delete', intent: 'alert-subtle', size: 'sm', onClick: ctx.eventHandler(`delete-comment-${comment.id}`, () => { deletingCommentId.set(comment.id); editingCommentId.set(null); replyingToCommentId.set(null); isReplyingToThread.set(false); })}));
                 }
 
                 return tray.div([
@@ -570,7 +533,7 @@ function init() {
                     ...(replyingToCommentId.get() === comment.id ? [
                         tray.stack([
                             renderToolbar(replyInputRef),
-                            tray.input({ placeholder: "Write a reply...", fieldRef: replyInputRef }),
+                            tray.input({ placeholder: "Write a reply...", fieldRef: replyInputRef, isTextarea: true, rows: 3 }),
                             tray.flex([
                                 tray.button({ label: isSubmitting.get() ? "Sending..." : "Send", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-${comment.id}`, () => handlePostReply(replyInputRef.current!, comment.id)) }),
                                 tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
@@ -586,36 +549,52 @@ function init() {
 
             if (view.get() === 'thread' && selectedThread.get()) {
                 const thread = selectedThread.get()!;
+                const opDecodedBody = decodeHtmlEntities(thread.body);
+                const opSegments = parseComment(opDecodedBody);
+                
                 return tray.stack([
                     tray.flex([
                         tray.button({ label: "< Back", intent: "gray-subtle", size: "sm", onClick: "back-to-list" }),
-                        tray.button({
-                            label: "Open in Browser 🔗",
-                            intent: "gray-subtle",
-                            size: "sm",
-                            onClick: ctx.eventHandler(`open-browser-${thread.id}`, () => {
-                                if (thread.siteUrl) openUrlInBrowser(thread.siteUrl);
-                            })
-                        })
+                        tray.button({ label: "Open in Browser 🔗", intent: "gray-subtle", size: "sm", onClick: ctx.eventHandler(`open-browser-${thread.id}`, () => { if (thread.siteUrl) openUrlInBrowser(thread.siteUrl); }) })
                     ], { style: { justifyContent: 'space-between', alignItems: 'center', paddingBottom: '8px', flexShrink: 0 } }),
                     
                     tray.div([
-                        tray.text({ text: thread.title, weight: "semibold", size: "lg", align: "center" }),
-                        tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '10px', marginBottom: '10px' } }),
-                        isReplyingToThread.get()
-                            ? tray.stack([
-                                renderToolbar(replyInputRef),
-                                tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef }),
-                                tray.flex([
-                                    tray.button({ label: isSubmitting.get() ? "Sending..." : "Post Comment", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-thread`, () => handlePostReply(replyInputRef.current!)) }),
-                                    tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
-                                ], { style: { gap: 2, justifyContent: 'flex-end' }})
-                            ], { style: { marginTop: '8px' }})
-                            : tray.button({ label: "Post a new comment", intent: "primary", onClick: ctx.eventHandler(`reply-to-thread`, () => {
-                                isReplyingToThread.set(true); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null);
-                            }) }),
+                        tray.text({ text: thread.title, weight: "semibold", size: "xl", align: "center" }),
+                        tray.div([
+                            tray.flex([
+                                tray.div([], { style: { width: '36px', height: '36px', borderRadius: '50%', backgroundImage: `url(${thread.user.avatar.large})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 } }),
+                                tray.stack([
+                                    tray.flex([
+                                        tray.text({ text: thread.user.name, weight: "semibold", style: { whiteSpace: 'nowrap' } }),
+                                        tray.text({ text: formatTimeAgo(thread.createdAt), size: "sm", color: "gray", style: { fontStyle: 'italic', marginLeft: '8px', whiteSpace: 'nowrap' } })
+                                    ], { style: { alignItems: 'baseline', alignSelf: 'flex-start' } }),
+                                    tray.div(opSegments.map((segment, index) => renderSegment(segment, `op-${index}`)), { style: { flexWrap: 'wrap', alignItems: 'center', gap: '2px', lineHeight: '1.6'} }),
+                                ], { style: { flexGrow: 1, gap: 1, minWidth: 0 } })
+                            ], { style: { gap: 3, alignItems: 'start' } })
+                        ], { style: { padding: '12px', background: 'rgba(255, 255, 255, 0.03)', borderRadius: '8px', marginTop: '12px' } }),
                         
-                        isLoading.get() && !comments.get() ? tray.text("Loading comments...") : (comments.get() ? comments.get()!.map(comment => renderComment(comment)) : tray.text("No comments found."))
+                        tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '20px', marginBottom: '10px' } }),
+                        tray.flex([
+                            tray.button({ label: "Post a new comment", intent: "primary", onClick: ctx.eventHandler(`reply-to-thread`, () => { isReplyingToThread.set(!isReplyingToThread.get()); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); }) }),
+                            tray.flex([
+                                tray.text({ text: "Sort:", size: "sm", color: "gray" }),
+                                tray.button({ label: "Newest", size: 'sm', intent: commentSort.get() === 'ID_DESC' ? 'primary-subtle' : 'gray-subtle', onClick: ctx.eventHandler('sort-new', () => commentSort.set('ID_DESC')) }),
+                                tray.button({ label: "Oldest", size: 'sm', intent: commentSort.get() === 'ID' ? 'primary-subtle' : 'gray-subtle', onClick: ctx.eventHandler('sort-old', () => commentSort.set('ID')) }),
+                            ], { style: { gap: 1, alignItems: 'center' } })
+                        ], { style: { justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', marginBottom: '10px' } }),
+                        
+                        ...(isReplyingToThread.get() ? [tray.stack([
+                            renderToolbar(replyInputRef),
+                            tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef, isTextarea: true, rows: 4 }),
+                            tray.flex([
+                                tray.button({ label: isSubmitting.get() ? "Sending..." : "Post Comment", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-thread`, () => handlePostReply(replyInputRef.current!)) }),
+                                tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
+                            ], { style: { gap: 2, justifyContent: 'flex-end' }})
+                        ], { style: { marginTop: '8px' }})] : []),
+                        
+                        isLoading.get() && !comments.get() ? tray.stack([renderCommentSkeleton(), renderCommentSkeleton(), renderCommentSkeleton()]) : (comments.get() ? comments.get()!.map(comment => renderComment(comment)) : tray.text("No comments found.")),
+                        
+                        ...(commentsHasNextPage.get() ? [tray.button({ label: isLoading.get() ? "Loading..." : "Load More", intent: "primary-subtle", disabled: isLoading.get(), onClick: "load-more-comments", style: { marginTop: '12px' } })] : [])
                     ], { style: { flexGrow: 1, overflowY: 'auto', paddingRight: '8px' } })
                 ], { style: { height: '100%', display: 'flex', flexDirection: 'column' } });
             }
@@ -625,18 +604,34 @@ function init() {
                 return tray.div([
                     tray.stack([
                         tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
-                        ...threadList.filter(t => t.isEpisode).sort((a, b) => a.episodeNumber - b.episodeNumber).map(thread =>
-                            tray.button({
-                                label: `Episode ${thread.episodeNumber} Discussion`, intent: "primary-subtle",
-                                onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); })
-                            })
+                        tray.flex(
+                            threadList.filter(t => t.isEpisode).sort((a, b) => a.episodeNumber - b.episodeNumber).map(thread =>
+                                tray.button({ label: `${thread.episodeNumber}`, intent: "primary-subtle", style: { minWidth: '40px', justifyContent: 'center' }, onClick: ctx.eventHandler(`select-thread-ep-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); }) })
+                            ),
+                            { style: { gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: '8px' } }
                         ),
                         ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '10px', marginBottom: '10px' } })] : []),
                         ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.text({ text: "General Discussions", size: "lg", align: "center", weight: "semibold" })] : []),
                         ...threadList.filter(t => !t.isEpisode).map(thread =>
-                            tray.button({
-                                label: `(${thread.replyCount}) ${thread.title}`, intent: "primary-subtle",
-                                onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); })
+                            tray.stack([
+                                tray.flex([
+                                    tray.div([], { style: { width: '40px', height: '40px', borderRadius: '50%', backgroundImage: `url(${thread.user.avatar.large})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 } }),
+                                    tray.stack([
+                                        tray.text({ text: thread.title, weight: 'semibold' }),
+                                        tray.text({ text: `Created by ${thread.user.name} · ${thread.replyCount} replies · Last by ${thread.replyUser?.name || 'N/A'} ${formatTimeAgo(thread.repliedAt)}`, size: 'sm', color: 'gray' })
+                                    ], { style: { flexGrow: 1, gap: 1 } })
+                                ], { style: { gap: 3, alignItems: 'center' } }),
+                                tray.button({
+                                    label: ' ',
+                                    style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: 'transparent', border: 'none', color: 'transparent', cursor: 'pointer' },
+                                    onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => {
+                                        selectedThread.set(thread);
+                                        view.set('thread');
+                                    })
+                                })
+                            ], { 
+                                style: { position: 'relative', padding: '10px 5px', borderBottom: '1px solid #2D3748' },
+                                hoverStyle: { backgroundColor: 'rgba(255, 255, 255, 0.05)' }
                             })
                         )
                     ])
@@ -651,7 +646,7 @@ function init() {
                 const id = parseInt(e.searchParams.id);
                 if (currentMediaId.get() !== id) {
                     currentMediaId.set(id);
-                    threads.set(null); comments.set(null); selectedThread.set(null); view.set('list'); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false);
+                    threads.set(null); comments.set(null); selectedThread.set(null); view.set('list'); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); commentsPage.set(1); commentsHasNextPage.set(false);
                 }
             } else {
                 currentMediaId.set(null);
