@@ -81,7 +81,6 @@ function init() {
         function parseComment(text: string): CommentSegment[] {
             const cleanedText = decodeHtmlEntities(text.replace(/<br>/g, '\n'));
 
-            // Pre-process multiline blocks to avoid issues with line-by-line parsing
             const blocks: (string | { type: 'code-block' | 'center' | 'spoiler'; content: string })[] = [];
             let remainingText = cleanedText;
             
@@ -89,27 +88,29 @@ function init() {
             let lastIndex = 0;
             let match;
             while ((match = multilineRegex.exec(remainingText)) !== null) {
-                // Add the text before this block
                 if (match.index > lastIndex) {
                     blocks.push(remainingText.substring(lastIndex, match.index));
                 }
-                // Add the matched block
-                if (match[2] !== undefined) { // Code block
+                if (match[2] !== undefined) {
                     blocks.push({ type: 'code-block', content: match[2] });
-                } else if (match[4] !== undefined) { // Center block
+                } else if (match[4] !== undefined) {
                     blocks.push({ type: 'center', content: match[4] });
-                } else if (match[6] !== undefined) { // Spoiler block
+                } else if (match[6] !== undefined) {
                     blocks.push({ type: 'spoiler', content: match[6] });
                 }
                 lastIndex = match.index + match[0].length;
             }
-            // Add any remaining text after the last block
             if (lastIndex < remainingText.length) {
                 blocks.push(remainingText.substring(lastIndex));
             }
             
-            // Define parsing rules
             const inlineRules = [
+                // HTML rules first to override markdown
+                { type: 'image', regex: /^<a\s+href="([^"]+)"[^>]*>\s*<img\s+src="([^"]+)"[^>]*>\s*<\/a>/i, process: (m:RegExpMatchArray) => ({ url: m[1], content: m[2] }) },
+                { type: 'image', regex: /^<img\s+src="([^"]+)"[^>]*>/i, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
+                { type: 'bold', regex: /^<b>([\s\S]*?)<\/b>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                { type: 'link', regex: /^<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), url: m[1] }) },
+                // Markdown rules
                 { type: 'image', regex: /^img(\d*)\((.*?)\)/, process: (m: RegExpMatchArray) => ({ content: m[2] }) },
                 { type: 'youtube', regex: /^youtube\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: `https://www.youtube.com/watch?v=${m[1]}`, content: `youtube.com/watch?v=${m[1]}` }) },
                 { type: 'video', regex: /^video\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: m[1], content: m[1] }) },
@@ -118,6 +119,7 @@ function init() {
                 { type: 'italic', regex: /^\*([\s\S]+?)\*|^\_([\s\S]+?)\_/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1] || m[2]) }) },
                 { type: 'strike', regex: /^~~([\s\S]+?)~~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'spoiler', regex: /^!~(.+?)~!/, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
+                { type: 'spoiler', regex: /^~!([\s\S]+?)!~/, process: (m: RegExpMatchArray) => ({ content: m[1] }) }, 
                 { type: 'inline-code', regex: /^`([^`]+?)`/, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
                 { type: 'link', regex: /^(https?:\/\/[^\s<>"'{}|\\^`[\]]+)/, process: (m: RegExpMatchArray) => ({ content: m[1], url: m[1] }) },
             ];
@@ -125,8 +127,16 @@ function init() {
             const lineStartRules = [
                 { type: 'center', regex: /^#<center>(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'heading', regex: /^(#{1,5})\s+(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), level: m[1].length }) },
-                { type: 'blockquote', regex: /^>\s(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                { type: 'blockquote', regex: /^>\s?(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'hr', regex: /^---\s*$/, process: () => ({ content: '' }) },
+            ];
+            
+            const loneFormatterRules = [
+                { type: 'bold', regex: /^\*\*([\s\S]+?)\*\*$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
+                { type: 'bold', regex: /^\_\_([\s\S]+?)\_\_$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
+                { type: 'italic', regex: /^\*([\s\S]+?)\*$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
+                { type: 'italic', regex: /^\_([\s\S]+?)\_$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
+                { type: 'strike', regex: /^~~([\s\S]+?)~~$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
             ];
 
             function parseInline(line: string): CommentSegment[] {
@@ -148,7 +158,7 @@ function init() {
                     }
 
                     if (!matched) {
-                        const nextTokenIndex = text.search(/(\[|!~|https?:\/\/|`|\*\*|\*|__|_|~~|img\(|youtube\(|video\()/);
+                        const nextTokenIndex = text.search(/(\[|!~|~!|https?:\/\/|`|\*\*|\*|__|_|~~|img\(|youtube\(|video\(|<[a|img|b])/);
                         const plainTextEnd = nextTokenIndex === -1 ? text.length : nextTokenIndex;
                         const plainText = text.slice(0, plainTextEnd > 0 ? plainTextEnd : 1);
                         
@@ -182,6 +192,22 @@ function init() {
                             resultSegments.push({ type: 'br', content: '' });
                             continue;
                         }
+
+                        let isLoneFormatter = false;
+                        for(const rule of loneFormatterRules){
+                            const match = line.trim().match(rule.regex);
+                            if(match){
+                                resultSegments.push({ type: 'center', content: rule.process(match) });
+                                isLoneFormatter = true;
+                                break;
+                            }
+                        }
+
+                        if (isLoneFormatter) {
+                             if (i < lines.length - 1) resultSegments.push({ type: 'br', content: '' });
+                             continue;
+                        }
+                        
                         let matchedLineRule = false;
                         for(const rule of lineStartRules) {
                             const match = line.match(rule.regex);
@@ -191,6 +217,7 @@ function init() {
                                 break;
                             }
                         }
+
                         if (!matchedLineRule && line) {
                             resultSegments.push(...parseInline(line));
                         }
@@ -233,14 +260,20 @@ function init() {
                         ? tray.div([tray.text({ text: segment.content as string, style: { background: '#2D3748', padding: '2px 4px', borderRadius: '4px', cursor: 'pointer', ...textStyle, display: 'block' } })], { onClick: ctx.eventHandler(key, () => revealedSpoilers.set(s => ({ ...s, [key]: false }))) })
                         : tray.button({ label: "Spoiler", intent: "primary-subtle", size: "sm", onClick: ctx.eventHandler(key, () => revealedSpoilers.set(s => ({ ...s, [key]: true }))) });
                 case 'image':
+                    const imageUrl = segment.content as string;
+                    const linkUrlForImage = segment.url || imageUrl;
                     return tray.stack([
-                        tray.div([], { style: { width: '100%', maxWidth: '300px', aspectRatio: '16 / 9', backgroundImage: `url(${segment.content})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', borderRadius: '4px', backgroundColor: '#2D3748' } }),
+                        tray.div([], { style: { width: '100%', maxWidth: '300px', aspectRatio: '16 / 9', backgroundImage: `url(${imageUrl})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', borderRadius: '4px', backgroundColor: '#2D3748' } }),
                         tray.flex([
                             tray.text({ text: "Image may not load.", size: "sm", color: "gray" }),
-                            tray.button({ label: "Open Link", intent: 'link', size: 'sm', onClick: ctx.eventHandler(`${key}-open`, () => linkToConfirm.set(segment.content as string)) })
+                            tray.button({ label: "Open Link", intent: 'link', size: 'sm', onClick: ctx.eventHandler(`${key}-open`, () => linkToConfirm.set(linkUrlForImage)) })
                         ], { style: { gap: 2, alignItems: 'center', marginTop: '2px' } })
                     ], { style: { gap: 1, marginTop: '4px', display: 'inline-block' } });
                 case 'link':
+                     const linkContent = segment.content;
+                     if(Array.isArray(linkContent) && linkContent.length > 0) {
+                        return createWrapper(renderContent(linkContent), { color: '#66b2ff', textDecoration: 'underline', cursor: 'pointer' }, 'inline', { onClick: ctx.eventHandler(key, () => linkToConfirm.set(segment.url!))});
+                     }
                     const linkText = (segment.content as string).length > 50 ? (segment.content as string).substring(0, 47) + '...' : (segment.content as string);
                     return tray.button({ label: linkText, intent: 'link', size: 'sm', onClick: ctx.eventHandler(key, () => linkToConfirm.set(segment.url!)) });
                 default:
