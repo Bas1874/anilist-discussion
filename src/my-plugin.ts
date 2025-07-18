@@ -45,27 +45,6 @@ function init() {
 
         // --- HELPER FUNCTIONS ---
 
-        function openUrlInBrowser(url: string) {
-            try {
-                let command: string;
-                let args: string[];
-                if ($os.platform === 'windows') {
-                    command = 'cmd';
-                    args = ['/C', 'start', url.replace(/&/g, "^&")];
-                } else if ($os.platform === 'darwin') {
-                    command = 'open';
-                    args = [url];
-                } else {
-                    command = 'xdg-open';
-                    args = [url];
-                }
-                const cmd = $osExtra.asyncCmd(command, ...args);
-                cmd.run(() => {});
-            } catch (e: any) {
-                error.set("Failed to open URL. " + e.message);
-            }
-        }
-
         function decodeHtmlEntities(text: string): string {
             if (!text) return "";
             return text.replace(/&#(\d+);/g, (match, dec) => {
@@ -584,7 +563,19 @@ function init() {
                         tray.text({ text: "Open external link?", weight: 'semibold', size: 'lg'}),
                         tray.text({ text: urlToConfirm, size: "sm", color: "gray", style: { wordBreak: 'break-all' } }),
                         tray.flex([
-                            tray.button({ label: "Yes, open", intent: "primary", onClick: ctx.eventHandler('confirm-open-link', () => { openUrlInBrowser(urlToConfirm); linkToConfirm.set(null); }) }),
+                             tray.div([
+                                tray.anchor({ 
+                                    text: "Yes, open", 
+                                    href: urlToConfirm, 
+                                    target: "_blank",
+                                    className: "bg-brand-500 hover:bg-brand-600 active:bg-brand-700 border border-transparent text-white font-medium text-sm rounded-md px-3 py-1.5 transition-colors no-underline",
+                                })
+                            ], { onClick: ctx.eventHandler('confirm-open-link', () => { 
+                                    ctx.setTimeout(() => {
+                                        linkToConfirm.set(null);
+                                    }, 150);
+                                }) 
+                            }),
                             tray.button({ label: "Cancel", intent: "gray", onClick: ctx.eventHandler('cancel-open-link', () => { linkToConfirm.set(null); }) })
                         ], { style: { gap: 2, justifyContent: 'center', marginTop: '12px' }})
                     ], { style: { gap: 2, alignItems: 'center' }})
@@ -671,7 +662,12 @@ function init() {
                 return tray.stack([
                     tray.flex([
                         tray.button({ label: "< Back", intent: "gray-subtle", size: "sm", onClick: "back-to-list" }),
-                        tray.button({ label: "Open in Browser 🔗", intent: "gray-subtle", size: "sm", onClick: ctx.eventHandler(`open-browser-${thread.id}`, () => { if (thread.siteUrl) openUrlInBrowser(thread.siteUrl); }) })
+                        tray.anchor({ 
+                            text: "Open in Browser 🔗", 
+                            href: thread.siteUrl, 
+                            target: "_blank",
+                            className: "bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium px-3 py-1.5 rounded-md transition-colors no-underline",
+                        })
                     ], { style: { justifyContent: 'space-between', alignItems: 'center', paddingBottom: '8px', flexShrink: 0 } }),
                     
                     tray.div([
