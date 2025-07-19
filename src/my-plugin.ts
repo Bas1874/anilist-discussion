@@ -10,7 +10,7 @@ interface User {
 }
 interface Thread {
     id: number;
-    title: string;
+    title:string;
     body: string; 
     createdAt: number; 
     replyCount: number;
@@ -42,6 +42,43 @@ interface CommentSegment {
 
 function init() {
     $ui.register((ctx) => {
+
+        // --- Function to inject final custom scrollbar styles ---
+        const stylesInjected = ctx.state(false);
+        const injectScrollbarStyles = async () => {
+            if (stylesInjected.get()) return;
+            try {
+                // Increased width from 10px to 12px for a more substantial feel.
+                const css = `
+                    ::-webkit-scrollbar {
+                        width: 12px;
+                    }
+                    ::-webkit-scrollbar-track {
+                        background: transparent;
+                    }
+                    ::-webkit-scrollbar-thumb {
+                        background-color: rgba(255, 255, 255, 0.2);
+                        border-radius: 10px;
+                        border: 2px solid transparent;
+                        background-clip: content-box;
+                    }
+                    ::-webkit-scrollbar-thumb:hover {
+                        background-color: rgba(255, 255, 255, 0.4);
+                    }
+                `;
+                const head = await ctx.dom.queryOne("head");
+                if (head) {
+                    const styleEl = await ctx.dom.createElement("style");
+                    await styleEl.setText(css);
+                    await head.append(styleEl);
+                    stylesInjected.set(true);
+                }
+            } catch (e) {
+                console.error("Failed to inject scrollbar styles:", e);
+            }
+        };
+        // Inject styles when the UI context is registered
+        injectScrollbarStyles();
 
         // --- HELPER FUNCTIONS ---
 
@@ -497,7 +534,15 @@ function init() {
             width: '850px',
             height: '90vh'
         });
-        tray.onOpen(() => { fetchViewer(); if (currentMediaId.get()) fetchThreads(currentMediaId.get()!); });
+
+        tray.onOpen(() => {
+            fetchViewer();
+            const mediaId = currentMediaId.get();
+            if (mediaId) {
+                fetchThreads(mediaId);
+            }
+        });
+
         ctx.effect(() => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id, 1); }, [selectedThread, commentSort]);
         ctx.registerEventHandler("back-to-list", () => {
             view.set('list'); selectedThread.set(null); comments.set(null); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); commentsPage.set(1); commentsHasNextPage.set(false);
@@ -660,6 +705,7 @@ function init() {
                 const opSegments = parseComment(thread.body);
                 
                 return tray.stack([
+                    // Top Bar (non-scrolling)
                     tray.flex([
                         tray.button({ label: "< Back", intent: "gray-subtle", size: "sm", onClick: "back-to-list" }),
                         tray.anchor({ 
@@ -670,84 +716,90 @@ function init() {
                         })
                     ], { style: { justifyContent: 'space-between', alignItems: 'center', paddingBottom: '8px', flexShrink: 0 } }),
                     
+                    // Middle scrollable container
                     tray.div([
-                        tray.text({ text: thread.title, weight: "semibold", size: "xl", align: "center" }),
-                        tray.div([
+                        // Innermost container with padding for content
+                        tray.stack([
+                            tray.text({ text: thread.title, weight: "semibold", size: "xl", align: "center" }),
+                            tray.div([
+                                tray.flex([
+                                    tray.div([], { style: { width: '36px', height: '36px', borderRadius: '50%', backgroundImage: `url(${thread.user.avatar.large})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 } }),
+                                    tray.stack([
+                                        tray.flex([
+                                            tray.text({ text: thread.user.name, weight: "semibold", style: { whiteSpace: 'nowrap' } }),
+                                            tray.text({ text: formatTimeAgo(thread.createdAt), size: "sm", color: "gray", style: { fontStyle: 'italic', marginLeft: '8px', whiteSpace: 'nowrap' } })
+                                        ], { style: { alignItems: 'baseline', alignSelf: 'flex-start' } }),
+                                        tray.div(opSegments.map((segment, index) => renderSegment(segment, `op-${index}`)), { style: { display: 'block'} }),
+                                    ], { style: { flexGrow: 1, gap: 1, minWidth: 0 } })
+                                ], { style: { gap: 3, alignItems: 'start' } })
+                            ], { style: { padding: '12px', background: 'rgba(255, 255, 255, 0.03)', borderRadius: '8px', marginTop: '12px' } }),
+                            
+                            tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '20px', marginBottom: '10px' } }),
                             tray.flex([
-                                tray.div([], { style: { width: '36px', height: '36px', borderRadius: '50%', backgroundImage: `url(${thread.user.avatar.large})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 } }),
-                                tray.stack([
-                                    tray.flex([
-                                        tray.text({ text: thread.user.name, weight: "semibold", style: { whiteSpace: 'nowrap' } }),
-                                        tray.text({ text: formatTimeAgo(thread.createdAt), size: "sm", color: "gray", style: { fontStyle: 'italic', marginLeft: '8px', whiteSpace: 'nowrap' } })
-                                    ], { style: { alignItems: 'baseline', alignSelf: 'flex-start' } }),
-                                    tray.div(opSegments.map((segment, index) => renderSegment(segment, `op-${index}`)), { style: { display: 'block'} }),
-                                ], { style: { flexGrow: 1, gap: 1, minWidth: 0 } })
-                            ], { style: { gap: 3, alignItems: 'start' } })
-                        ], { style: { padding: '12px', background: 'rgba(255, 255, 255, 0.03)', borderRadius: '8px', marginTop: '12px' } }),
-                        
-                        tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '20px', marginBottom: '10px' } }),
-                        tray.flex([
-                            tray.button({ label: "Post a new comment", intent: "primary", onClick: ctx.eventHandler(`reply-to-thread`, () => { isReplyingToThread.set(!isReplyingToThread.get()); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); }) }),
-                            tray.flex([
-                                tray.text({ text: "Sort:", size: "sm", color: "gray" }),
-                                tray.button({ label: "Newest", size: 'sm', intent: commentSort.get() === 'ID_DESC' ? 'primary-subtle' : 'gray-subtle', onClick: ctx.eventHandler('sort-new', () => commentSort.set('ID_DESC')) }),
-                                tray.button({ label: "Oldest", size: 'sm', intent: commentSort.get() === 'ID' ? 'primary-subtle' : 'gray-subtle', onClick: ctx.eventHandler('sort-old', () => commentSort.set('ID')) }),
-                            ], { style: { gap: 1, alignItems: 'center' } })
-                        ], { style: { justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', marginBottom: '10px' } }),
-                        
-                        ...(isReplyingToThread.get() ? [tray.stack([
-                            renderToolbar(replyInputRef),
-                            tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef, isTextarea: true, rows: 4 }),
-                            tray.flex([
-                                tray.button({ label: isSubmitting.get() ? "Sending..." : "Post Comment", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-thread`, () => handlePostReply(replyInputRef.current!)) }),
-                                tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
-                            ], { style: { gap: 2, justifyContent: 'flex-end' }})
-                        ], { style: { marginTop: '8px' }})] : []),
-                        
-                        isLoading.get() && !comments.get() ? tray.stack([renderCommentSkeleton(), renderCommentSkeleton(), renderCommentSkeleton()]) : (comments.get() ? comments.get()!.map(comment => renderComment(comment)) : tray.text("No comments found.")),
-                        
-                        ...(commentsHasNextPage.get() ? [tray.button({ label: isLoading.get() ? "Loading..." : "Load More", intent: "primary-subtle", disabled: isLoading.get(), onClick: "load-more-comments", style: { marginTop: '12px' } })] : [])
-                    ], { style: { flexGrow: 1, overflowY: 'auto', paddingRight: '8px' } })
+                                tray.button({ label: "Post a new comment", intent: "primary", onClick: ctx.eventHandler(`reply-to-thread`, () => { isReplyingToThread.set(!isReplyingToThread.get()); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); }) }),
+                                tray.flex([
+                                    tray.text({ text: "Sort:", size: "sm", color: "gray" }),
+                                    tray.button({ label: "Newest", size: 'sm', intent: commentSort.get() === 'ID_DESC' ? 'primary-subtle' : 'gray-subtle', onClick: ctx.eventHandler('sort-new', () => commentSort.set('ID_DESC')) }),
+                                    tray.button({ label: "Oldest", size: 'sm', intent: commentSort.get() === 'ID' ? 'primary-subtle' : 'gray-subtle', onClick: ctx.eventHandler('sort-old', () => commentSort.set('ID')) }),
+                                ], { style: { gap: 1, alignItems: 'center' } })
+                            ], { style: { justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', marginBottom: '10px' } }),
+                            
+                            ...(isReplyingToThread.get() ? [tray.stack([
+                                renderToolbar(replyInputRef),
+                                tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef, isTextarea: true, rows: 4 }),
+                                tray.flex([
+                                    tray.button({ label: isSubmitting.get() ? "Sending..." : "Post Comment", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-thread`, () => handlePostReply(replyInputRef.current!)) }),
+                                    tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
+                                ], { style: { gap: 2, justifyContent: 'flex-end' }})
+                            ], { style: { marginTop: '8px' }})] : []),
+                            
+                            isLoading.get() && !comments.get() ? tray.stack([renderCommentSkeleton(), renderCommentSkeleton(), renderCommentSkeleton()]) : (comments.get() ? comments.get()!.map(comment => renderComment(comment)) : tray.text("No comments found.")),
+                            
+                            ...(commentsHasNextPage.get() ? [tray.button({ label: isLoading.get() ? "Loading..." : "Load More", intent: "primary-subtle", disabled: isLoading.get(), onClick: "load-more-comments", style: { marginTop: '12px' } })] : [])
+                        ], {})
+                    ], { style: { flexGrow: 1, overflowY: 'auto' } })
                 ], { style: { height: '100%', display: 'flex', flexDirection: 'column' } });
             }
 
             const threadList = threads.get();
             if (threadList) {
-                return tray.div([
-                    tray.stack([
-                        tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
-                        tray.flex(
-                            threadList.filter(t => t.isEpisode).sort((a, b) => a.episodeNumber - b.episodeNumber).map(thread =>
-                                tray.button({ label: `${thread.episodeNumber}`, intent: "primary-subtle", style: { minWidth: '40px', justifyContent: 'center' }, onClick: ctx.eventHandler(`select-thread-ep-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); }) })
+                return tray.stack([
+                    tray.div([
+                        tray.stack([
+                            tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
+                            tray.flex(
+                                threadList.filter(t => t.isEpisode).sort((a, b) => a.episodeNumber - b.episodeNumber).map(thread =>
+                                    tray.button({ label: `${thread.episodeNumber}`, intent: "primary-subtle", style: { minWidth: '40px', justifyContent: 'center' }, onClick: ctx.eventHandler(`select-thread-ep-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); }) })
+                                ),
+                                { style: { gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: '8px' } }
                             ),
-                            { style: { gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: '8px' } }
-                        ),
-                        ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '10px', marginBottom: '10px' } })] : []),
-                        ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.text({ text: "General Discussions", size: "lg", align: "center", weight: "semibold" })] : []),
-                        ...threadList.filter(t => !t.isEpisode).map(thread =>
-                            tray.stack([
-                                tray.flex([
-                                    tray.div([], { style: { width: '40px', height: '40px', borderRadius: '50%', backgroundImage: `url(${thread.user.avatar.large})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 } }),
-                                    tray.stack([
-                                        tray.text({ text: thread.title, weight: 'semibold' }),
-                                        tray.text({ text: `Created by ${thread.user.name} · ${thread.replyCount} replies · Last by ${thread.replyUser?.name || 'N/A'} ${formatTimeAgo(thread.repliedAt)}`, size: 'sm', color: 'gray' })
-                                    ], { style: { flexGrow: 1, gap: 1 } })
-                                ], { style: { gap: 3, alignItems: 'center' } }),
-                                tray.button({
-                                    label: ' ',
-                                    style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: 'transparent', border: 'none', color: 'transparent', cursor: 'pointer' },
-                                    onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => {
-                                        selectedThread.set(thread);
-                                        view.set('thread');
+                            ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '10px', marginBottom: '10px' } })] : []),
+                            ...(threadList.filter(t => !t.isEpisode).length > 0 ? [tray.text({ text: "General Discussions", size: "lg", align: "center", weight: "semibold" })] : []),
+                            ...threadList.filter(t => !t.isEpisode).map(thread =>
+                                tray.stack([
+                                    tray.flex([
+                                        tray.div([], { style: { width: '40px', height: '40px', borderRadius: '50%', backgroundImage: `url(${thread.user.avatar.large})`, backgroundSize: 'cover', backgroundPosition: 'center', flexShrink: 0 } }),
+                                        tray.stack([
+                                            tray.text({ text: thread.title, weight: 'semibold' }),
+                                            tray.text({ text: `Created by ${thread.user.name} · ${thread.replyCount} replies · Last by ${thread.replyUser?.name || 'N/A'} ${formatTimeAgo(thread.repliedAt)}`, size: 'sm', color: 'gray' })
+                                        ], { style: { flexGrow: 1, gap: 1 } })
+                                    ], { style: { gap: 3, alignItems: 'center' } }),
+                                    tray.button({
+                                        label: ' ',
+                                        style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: 'transparent', border: 'none', color: 'transparent', cursor: 'pointer' },
+                                        onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => {
+                                            selectedThread.set(thread);
+                                            view.set('thread');
+                                        })
                                     })
+                                ], { 
+                                    style: { position: 'relative', padding: '10px 5px', borderBottom: '1px solid #2D3748' },
+                                    hoverStyle: { backgroundColor: 'rgba(255, 255, 255, 0.05)' }
                                 })
-                            ], { 
-                                style: { position: 'relative', padding: '10px 5px', borderBottom: '1px solid #2D3748' },
-                                hoverStyle: { backgroundColor: 'rgba(255, 255, 255, 0.05)' }
-                            })
-                        )
-                    ])
-                ], { style: { height: '100%', overflowY: 'auto', paddingRight: '8px' } });
+                            )
+                        ], {})
+                    ], { style: { flexGrow: 1, overflowY: 'auto' } })
+                ], { style: { height: '100%', display: 'flex', flexDirection: 'column' } });
             }
             return tray.stack([tray.text("No discussions found for this entry.")]);
         });
