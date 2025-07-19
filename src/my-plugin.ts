@@ -341,6 +341,8 @@ function init() {
         const commentSort = ctx.state<'ID' | 'ID_DESC'>('ID_DESC');
         const commentsPage = ctx.state(1);
         const commentsHasNextPage = ctx.state(false);
+        // NEW STATE: Tracks the media ID currently being fetched.
+        const fetchingMediaId = ctx.state<number | null>(null);
 
 
         // --- API SERVICE (ABSTRACTION) ---
@@ -402,15 +404,37 @@ function init() {
             } catch (e: any) { console.error("Failed to fetch viewer info:", e.message); }
         };
 
+        // REVISED fetchThreads function to prevent race conditions
         const fetchThreads = async (mediaId: number) => {
-            if (threads.get() !== null && !isLoading.get()) return;
-            isLoading.set(true); error.set(null);
+            // If we are already fetching data for the correct mediaId, don't start a new fetch
+            if (fetchingMediaId.get() === mediaId) return;
+
+            // Immediately set the state to loading for the new mediaId
+            fetchingMediaId.set(mediaId);
+            isLoading.set(true);
+            threads.set(null); // Clear old data
+            error.set(null);
+
             try {
                 const processedThreads = await anilistApi.fetchThreads(mediaId);
-                threads.set(processedThreads);
-            } catch (e: any) { error.set(e.message); }
-            finally { isLoading.set(false); }
+                // CRITICAL CHECK: Only update the state if the user is still viewing the same anime
+                if (fetchingMediaId.get() === mediaId) {
+                    threads.set(processedThreads);
+                }
+            } catch (e: any) {
+                 // CRITICAL CHECK: Only show an error if it's for the current anime
+                if (fetchingMediaId.get() === mediaId) {
+                    error.set(e.message);
+                }
+            } finally {
+                // CRITICAL CHECK: Only turn off the loading indicator if this was the active fetch
+                if (fetchingMediaId.get() === mediaId) {
+                    isLoading.set(false);
+                    fetchingMediaId.set(null); // Clear the active fetch ID
+                }
+            }
         };
+
 
         const fetchComments = async (threadId: number, page: number = 1) => {
             isLoading.set(true); error.set(null);
@@ -541,7 +565,7 @@ function init() {
                 fetchThreads(mediaId);
             }
         });
-        
+
         // BUG FIX: Reset link confirmation when tray is closed
         tray.onClose(() => {
             linkToConfirm.set(null);
@@ -875,7 +899,19 @@ function init() {
                 const id = parseInt(e.searchParams.id);
                 if (currentMediaId.get() !== id) {
                     currentMediaId.set(id);
-                    threads.set(null); comments.set(null); selectedThread.set(null); view.set('list'); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); commentsPage.set(1); commentsHasNextPage.set(false);
+                    // Reset all data related to the previous anime
+                    threads.set(null);
+                    comments.set(null);
+                    selectedThread.set(null);
+                    view.set('list');
+                    revealedSpoilers.set({});
+                    replyingToCommentId.set(null);
+                    editingCommentId.set(null);
+                    deletingCommentId.set(null);
+                    isReplyingToThread.set(false);
+                    commentsPage.set(1);
+                    commentsHasNextPage.set(false);
+                    fetchingMediaId.set(null); // Clear active fetch on navigation
                 }
             } else {
                 currentMediaId.set(null);
