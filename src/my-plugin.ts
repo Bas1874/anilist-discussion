@@ -48,7 +48,6 @@ function init() {
         const injectScrollbarStyles = async () => {
             if (stylesInjected.get()) return;
             try {
-                // Increased width from 10px to 12px for a more substantial feel.
                 const css = `
                     ::-webkit-scrollbar {
                         width: 12px;
@@ -595,12 +594,14 @@ function init() {
                         tray.div([], { style: { height: '18px', width: '70%', backgroundColor: '#2D3748', borderRadius: '4px' } }),
                         tray.div([], { style: { height: '14px', width: '50%', backgroundColor: '#2D3748', borderRadius: '4px', marginTop: '4px' } })
                     ], { style: { flexGrow: 1, gap: 1 } })
-                ], { style: { gap: 3, alignItems: 'center', padding: '10px 0', opacity: 0.5 } })
-            ]);
+                ], { style: { gap: 3, alignItems: 'center' } })
+            ], { style: { padding: '10px 5px', borderBottom: '1px solid #2D3748', opacity: 0.5 }});
         }
         
         // --- UI RENDERING ---
         tray.render(() => {
+            const centralMessage = (text: string) => tray.stack([tray.text(text)], { style: { height: '100%', alignItems: 'center', justifyContent: 'center' } });
+
             const urlToConfirm = linkToConfirm.get();
             if (urlToConfirm) {
                 return tray.div([
@@ -626,10 +627,21 @@ function init() {
                     ], { style: { gap: 2, alignItems: 'center' }})
                 ], { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '20px' }});
             }
+            
+            if (!currentMediaId.get()) return centralMessage("Navigate to an anime to see discussions.");
+            
+            // --- NEW: Comprehensive Skeleton for the entire thread list view ---
+            if (isLoading.get() && !threads.get()) {
+                return tray.stack([
+                    tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
+                    tray.flex(Array(8).fill(0).map(() => tray.div([], { style: { width: '40px', height: '30px', backgroundColor: '#2D3748', borderRadius: '4px' } })), { style: { gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: '8px', opacity: 0.5 } }),
+                    tray.div([], { style: { borderTop: '1px solid #2D3748', marginTop: '10px', marginBottom: '10px' } }),
+                    tray.text({ text: "General Discussions", size: "lg", align: "center", weight: "semibold" }),
+                    ...Array(5).fill(0).map(() => renderThreadSkeleton())
+                ], { style: { height: '100%', padding: '0 10px' } });
+            }
 
-            if (!currentMediaId.get()) return tray.stack([tray.text("Navigate to an anime to see discussions.")]);
-            if (isLoading.get() && !threads.get()) return tray.stack([renderThreadSkeleton(), renderThreadSkeleton(), renderThreadSkeleton()]);
-            if (error.get()) return tray.stack([tray.text(error.get()!)]);
+            if (error.get()) return centralMessage(error.get()!);
             
             const me = currentUser.get();
             const renderComment = (comment: ThreadComment) => {
@@ -703,9 +715,9 @@ function init() {
             if (view.get() === 'thread' && selectedThread.get()) {
                 const thread = selectedThread.get()!;
                 const opSegments = parseComment(thread.body);
+                const currentComments = comments.get();
                 
                 return tray.stack([
-                    // Top Bar (non-scrolling)
                     tray.flex([
                         tray.button({ label: "< Back", intent: "gray-subtle", size: "sm", onClick: "back-to-list" }),
                         tray.anchor({ 
@@ -716,9 +728,7 @@ function init() {
                         })
                     ], { style: { justifyContent: 'space-between', alignItems: 'center', paddingBottom: '8px', flexShrink: 0 } }),
                     
-                    // Middle scrollable container
                     tray.div([
-                        // Innermost container with padding for content
                         tray.stack([
                             tray.text({ text: thread.title, weight: "semibold", size: "xl", align: "center" }),
                             tray.div([
@@ -753,8 +763,10 @@ function init() {
                                 ], { style: { gap: 2, justifyContent: 'flex-end' }})
                             ], { style: { marginTop: '8px' }})] : []),
                             
-                            isLoading.get() && !comments.get() ? tray.stack([renderCommentSkeleton(), renderCommentSkeleton(), renderCommentSkeleton()]) : (comments.get() ? comments.get()!.map(comment => renderComment(comment)) : tray.text("No comments found.")),
-                            
+                            ...(isLoading.get() && !currentComments ? Array(3).fill(0).map(() => renderCommentSkeleton()) : []),
+                            ...(currentComments && currentComments.length > 0 ? currentComments.map(comment => renderComment(comment)) : []),
+                            ...(currentComments && currentComments.length === 0 && !isLoading.get() ? [tray.text({ text: "No comments yet. Be the first to post!", align: 'center', color: 'gray', style: { marginTop: '20px' } })] : []),
+                            ...(currentComments && currentComments.length > 0 && !commentsHasNextPage.get() && !isLoading.get() ? [tray.flex([tray.text({ text: "End of Discussion", color: 'gray', size: 'sm' })], { style: { justifyContent: 'center', marginTop: '20px' } })] : []),
                             ...(commentsHasNextPage.get() ? [tray.button({ label: isLoading.get() ? "Loading..." : "Load More", intent: "primary-subtle", disabled: isLoading.get(), onClick: "load-more-comments", style: { marginTop: '12px' } })] : [])
                         ], {})
                     ], { style: { flexGrow: 1, overflowY: 'auto' } })
@@ -769,7 +781,7 @@ function init() {
                             tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
                             tray.flex(
                                 threadList.filter(t => t.isEpisode).sort((a, b) => a.episodeNumber - b.episodeNumber).map(thread =>
-                                    tray.button({ label: `${thread.episodeNumber}`, intent: "primary-subtle", style: { minWidth: '40px', justifyContent: 'center' }, onClick: ctx.eventHandler(`select-thread-ep-${thread.id}`, () => { selectedThread.set(thread); view.set('thread'); }) })
+                                    tray.button({ label: `${thread.episodeNumber}`, intent: "primary-subtle", style: { minWidth: '40px', justifyContent: 'center' }, onClick: ctx.eventHandler(`select-thread-ep-${thread.id}`, () => { comments.set(null); isLoading.set(true); selectedThread.set(thread); view.set('thread'); }) })
                                 ),
                                 { style: { gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: '8px' } }
                             ),
@@ -787,10 +799,7 @@ function init() {
                                     tray.button({
                                         label: ' ',
                                         style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: 'transparent', border: 'none', color: 'transparent', cursor: 'pointer' },
-                                        onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => {
-                                            selectedThread.set(thread);
-                                            view.set('thread');
-                                        })
+                                        onClick: ctx.eventHandler(`select-thread-${thread.id}`, () => { comments.set(null); isLoading.set(true); selectedThread.set(thread); view.set('thread'); })
                                     })
                                 ], { 
                                     style: { position: 'relative', padding: '10px 5px', borderBottom: '1px solid #2D3748' },
@@ -801,7 +810,7 @@ function init() {
                     ], { style: { flexGrow: 1, overflowY: 'auto' } })
                 ], { style: { height: '100%', display: 'flex', flexDirection: 'column' } });
             }
-            return tray.stack([tray.text("No discussions found for this entry.")]);
+            return centralMessage("No discussions found for this entry.");
         });
         
         // --- NAVIGATION ---
