@@ -341,8 +341,8 @@ function init() {
         const commentSort = ctx.state<'ID' | 'ID_DESC'>('ID_DESC');
         const commentsPage = ctx.state(1);
         const commentsHasNextPage = ctx.state(false);
-        // NEW STATE: Tracks the media ID currently being fetched.
         const fetchingMediaId = ctx.state<number | null>(null);
+        const selectionState = ctx.state<{ start: number, end: number, text: string } | null>(null);
 
 
         // --- API SERVICE (ABSTRACTION) ---
@@ -404,33 +404,27 @@ function init() {
             } catch (e: any) { console.error("Failed to fetch viewer info:", e.message); }
         };
 
-        // REVISED fetchThreads function to prevent race conditions
         const fetchThreads = async (mediaId: number) => {
-            // If we are already fetching data for the correct mediaId, don't start a new fetch
             if (fetchingMediaId.get() === mediaId) return;
 
-            // Immediately set the state to loading for the new mediaId
             fetchingMediaId.set(mediaId);
             isLoading.set(true);
-            threads.set(null); // Clear old data
+            threads.set(null);
             error.set(null);
 
             try {
                 const processedThreads = await anilistApi.fetchThreads(mediaId);
-                // CRITICAL CHECK: Only update the state if the user is still viewing the same anime
                 if (fetchingMediaId.get() === mediaId) {
                     threads.set(processedThreads);
                 }
             } catch (e: any) {
-                 // CRITICAL CHECK: Only show an error if it's for the current anime
                 if (fetchingMediaId.get() === mediaId) {
                     error.set(e.message);
                 }
             } finally {
-                // CRITICAL CHECK: Only turn off the loading indicator if this was the active fetch
                 if (fetchingMediaId.get() === mediaId) {
                     isLoading.set(false);
-                    fetchingMediaId.set(null); // Clear the active fetch ID
+                    fetchingMediaId.set(null);
                 }
             }
         };
@@ -566,12 +560,16 @@ function init() {
             }
         });
 
-        // BUG FIX: Reset link confirmation when tray is closed
         tray.onClose(() => {
             linkToConfirm.set(null);
         });
 
         ctx.effect(() => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id, 1); }, [selectedThread, commentSort]);
+
+        ctx.registerEventHandler('inputSelectionChange', (e: { cursorStart: number, cursorEnd: number, selectedText: string }) => {
+            selectionState.set({ start: e.cursorStart, end: e.cursorEnd, text: e.selectedText });
+        });
+
         ctx.registerEventHandler("back-to-list", () => {
             view.set('list'); selectedThread.set(null); comments.set(null); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); deletingCommentId.set(null); isReplyingToThread.set(false); commentsPage.set(1); commentsHasNextPage.set(false);
         });
@@ -580,28 +578,47 @@ function init() {
         ctx.registerEventHandler("cancel-delete", () => { deletingCommentId.set(null); });
         ctx.registerEventHandler("load-more-comments", () => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id, commentsPage.get() + 1); });
 
+        // --- REVISED ---
+        // This is the main fix. This function now correctly wraps selected text.
         function renderToolbar(fieldRef: any) {
-            const wrapText = (chars: string, placeholder = "") => {
-                let current = fieldRef.current || "";
-                let [start, end] = [chars.length / 2, chars.length / 2];
-                if (placeholder) {
-                     current += placeholder;
-                     start = chars.indexOf(placeholder[0]);
-                     end = 1;
+            const applyFormatting = (prefix: string, suffix: string, isBlock: boolean = false) => {
+                const selection = selectionState.get();
+                let fullText = fieldRef.current || "";
+
+                if (!selection) {
+                    ctx.toast.warning("Please click inside the text box first.");
+                    return;
                 }
-                fieldRef.setValue(current.slice(0, start) + chars + current.slice(start));
+
+                if (isBlock && selection.start > 0 && fullText[selection.start - 1] !== '\n') {
+                    prefix = '\n' + prefix;
+                }
+
+                const before = fullText.substring(0, selection.start);
+                const selected = fullText.substring(selection.start, selection.end);
+                const after = fullText.substring(selection.end);
+
+                let newText;
+                if (selected) { // If text is selected, wrap it.
+                    newText = before + prefix + selected + suffix + after;
+                } else { // If no text is selected, insert characters at the cursor.
+                    newText = before + prefix + suffix + after;
+                }
+                fieldRef.setValue(newText);
             };
+
             return tray.flex([
-                tray.button({ label: 'B', onClick: ctx.eventHandler('tb-b', () => wrapText('____')), size: 'sm', intent: 'gray-subtle' }),
-                tray.button({ label: 'I', onClick: ctx.eventHandler('tb-i', () => wrapText('__')), size: 'sm', intent: 'gray-subtle' }),
-                tray.button({ label: 'S', onClick: ctx.eventHandler('tb-s', () => wrapText('~~~~')), size: 'sm', intent: 'gray-subtle' }),
-                tray.button({ label: 'H', onClick: ctx.eventHandler('tb-h', () => wrapText('\n# ')), size: 'sm', intent: 'gray-subtle' }),
-                tray.button({ label: 'Link', onClick: ctx.eventHandler('tb-link', () => wrapText('[](url)')), size: 'sm', intent: 'gray-subtle' }),
-                tray.button({ label: 'Quote', onClick: ctx.eventHandler('tb-quote', () => wrapText('\n> ')), size: 'sm', intent: 'gray-subtle' }),
-                tray.button({ label: 'Code', onClick: ctx.eventHandler('tb-code', () => wrapText('``')), size: 'sm', intent: 'gray-subtle' }),
-                tray.button({ label: 'Spoiler', onClick: ctx.eventHandler('tb-spoiler', () => wrapText('~!!~')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'B', onClick: ctx.eventHandler('tb-b', () => applyFormatting('**', '**')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'I', onClick: ctx.eventHandler('tb-i', () => applyFormatting('*', '*')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'S', onClick: ctx.eventHandler('tb-s', () => applyFormatting('~~', '~~')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'H', onClick: ctx.eventHandler('tb-h', () => applyFormatting('# ', '', true)), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Link', onClick: ctx.eventHandler('tb-link', () => applyFormatting('[', '](url)')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Quote', onClick: ctx.eventHandler('tb-quote', () => applyFormatting('> ', '', true)), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Code', onClick: ctx.eventHandler('tb-code', () => applyFormatting('`', '`')), size: 'sm', intent: 'gray-subtle' }),
+                tray.button({ label: 'Spoiler', onClick: ctx.eventHandler('tb-spoiler', () => applyFormatting('~!', '!~')), size: 'sm', intent: 'gray-subtle' }),
             ], { style: { gap: 1, padding: '4px', backgroundColor: '#1A202C', borderRadius: '4px', marginBottom: '4px' } });
         }
+
 
         // --- SKELETON LOADERS ---
         function renderCommentSkeleton() {
@@ -665,7 +682,7 @@ function init() {
                         return tray.div([
                             tray.stack([
                                 renderToolbar(editInputRef),
-                                tray.input({ placeholder: "Edit your comment...", fieldRef: editInputRef, isTextarea: true, rows: 3 }),
+                                tray.input({ placeholder: "Edit your comment...", fieldRef: editInputRef, textarea: true, onSelect: "inputSelectionChange" }),
                                 tray.flex([
                                     tray.button({ label: isSubmitting.get() ? "Saving..." : "Save", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`save-edit-${comment.id}`, () => handleEditComment(comment.id, editInputRef.current!)) }),
                                     tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-edit" })
@@ -701,7 +718,7 @@ function init() {
                         ...(replyingToCommentId.get() === comment.id ? [
                             tray.stack([
                                 renderToolbar(replyInputRef),
-                                tray.input({ placeholder: "Write a reply...", fieldRef: replyInputRef, isTextarea: true, rows: 3 }),
+                                tray.input({ placeholder: "Write a reply...", fieldRef: replyInputRef, textarea: true, onSelect: "inputSelectionChange" }),
                                 tray.flex([
                                     tray.button({ label: isSubmitting.get() ? "Sending..." : "Send", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-${comment.id}`, () => handlePostReply(replyInputRef.current!, comment.id)) }),
                                     tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
@@ -759,7 +776,7 @@ function init() {
 
                                 ...(isReplyingToThread.get() ? [tray.stack([
                                     renderToolbar(replyInputRef),
-                                    tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef, isTextarea: true, rows: 4 }),
+                                    tray.input({ placeholder: "Write a new comment...", fieldRef: replyInputRef, textarea: true, onSelect: "inputSelectionChange" }),
                                     tray.flex([
                                         tray.button({ label: isSubmitting.get() ? "Sending..." : "Post Comment", intent: "primary", disabled: isSubmitting.get(), onClick: ctx.eventHandler(`send-reply-thread`, () => handlePostReply(replyInputRef.current!)) }),
                                         tray.button({ label: "Cancel", intent: "gray", onClick: "cancel-reply" })
@@ -899,7 +916,6 @@ function init() {
                 const id = parseInt(e.searchParams.id);
                 if (currentMediaId.get() !== id) {
                     currentMediaId.set(id);
-                    // Reset all data related to the previous anime
                     threads.set(null);
                     comments.set(null);
                     selectedThread.set(null);
@@ -911,7 +927,7 @@ function init() {
                     isReplyingToThread.set(false);
                     commentsPage.set(1);
                     commentsHasNextPage.set(false);
-                    fetchingMediaId.set(null); // Clear active fetch on navigation
+                    fetchingMediaId.set(null);
                 }
             } else {
                 currentMediaId.set(null);
