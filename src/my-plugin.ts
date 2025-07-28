@@ -3,6 +3,8 @@
 /// <reference path="./system.d.ts" />
 /// <reference path="./core.d.ts" />
 
+const ENABLE_DEBUG_LOGGING = false; // Set to `true` to see raw data, `false` for normal use. (in the Console!)
+
 // Interfaces to define our data structures
 interface User {
     name: string;
@@ -149,8 +151,18 @@ function init() {
                 { type: 'image', regex: /^<a\s+href="([^"]+)"[^>]*>\s*<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>\s*<\/a>/i, process: (m:RegExpMatchArray) => ({ url: m[1], content: m[2] }) },
                 { type: 'image', regex: /^<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>/i, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
                 { type: 'bold', regex: /^<b>([\s\S]*?)<\/b>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+				                {
+                    type: 'bold-italic',
+                    regex: /^\_\_\_([\s\S]+?)\_\_\_/, // For three underscores
+                    process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
+                },
+                {
+                    type: 'bold-italic',
+                    regex: /^\*\*\*([\s\S]+?)\*\*\*/, // For three asterisks
+                    process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
+                },
                 { type: 'link', regex: /^<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), url: m[1] }) },
-                { type: 'image', regex: /^img(\d*)\((\S+)\)/, process: (m: RegExpMatchArray) => ({ content: m[2] }) },
+				{ type: 'image', regex: /^img([\d%]*)\(([^\)]+)\)/, process: (m: RegExpMatchArray) => ({ content: m[2] }) },
                 { type: 'youtube', regex: /^youtube\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: `https://www.youtube.com/watch?v=${m[1]}`, content: `youtube.com/watch?v=${m[1]}` }) },
                 { type: 'video', regex: /^video\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: m[1], content: m[1] }) },
                 { type: 'link', regex: /^\[([^\]]+)\]\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ content: m[1], url: m[2] }) },
@@ -164,7 +176,17 @@ function init() {
             ];
 
             const lineStartRules = [
-                { type: 'center', regex: /^#<center>(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                {
+                    type: 'center',
+                    regex: /^#<center>(.*)/,
+                    process: (m: RegExpMatchArray) => {
+                        let content = m[1]; 
+                        if (content.startsWith('____') && content.endsWith('____')) {
+                            content = `___${content.slice(4, -4)}___`;
+                        }
+                        return { content: parseInline(content) };
+                    }
+                },
                 { type: 'heading', regex: /^(#{1,5})\s+(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), level: m[1].length }) },
                 { type: 'blockquote', regex: /^>\s?(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'hr', regex: /^---\s*$/, process: () => ({ content: '' }) },
@@ -233,18 +255,34 @@ function init() {
                         }
 
                         let isLoneFormatter = false;
-                        for(const rule of loneFormatterRules){
-                            const match = line.trim().match(rule.regex);
-                            if(match){
-                                resultSegments.push({ type: 'center', content: rule.process(match) });
+                        for (const rule of loneFormatterRules) {
+                            // Match against the line (allowing for surrounding whitespace)
+                            const match = line.match(rule.regex);
+                            if (match) {
                                 isLoneFormatter = true;
-                                break;
+
+                                // Extract the text inside the formatting (e.g., "Now Let's Set Sail To Season 3!")
+                                const innerContent = match[1];
+
+                                // Parse that inner text for any other markdown
+                                const parsedInnerSegments = parseInline(innerContent);
+
+                                // Create the correct nested structure:
+                                // A 'center' block containing an 'italic' block, which holds the final content.
+                                resultSegments.push({
+                                    type: 'center',
+                                    content: [{
+                                        type: rule.type as 'bold' | 'italic' | 'strike',
+                                        content: parsedInnerSegments,
+                                    }]
+                                });
+                                break; // Rule matched, no need to check others
                             }
                         }
 
                         if (isLoneFormatter) {
-                             if (i < lines.length - 1) resultSegments.push({ type: 'br', content: '' });
-                             continue;
+                            if (i < lines.length - 1) resultSegments.push({ type: 'br', content: '' });
+                            continue; // Skip to the next line
                         }
 
                         let matchedLineRule = false;
@@ -285,6 +323,7 @@ function init() {
             switch (segment.type) {
                 case 'text': return tray.text({ text: segment.content as string, style: textStyle });
                 case 'br': return tray.div([], { style: { height: '0.5em', width: '100%', display: 'block' } });
+			    case 'bold-italic': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontWeight: 'bold', fontStyle: 'italic' });
                 case 'bold': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontWeight: 'bold' });
                 case 'italic': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontStyle: 'italic' });
                 case 'strike': return createWrapper(renderContent(segment.content as CommentSegment[]), { textDecoration: 'line-through' });
@@ -346,7 +385,7 @@ function init() {
                                     width: '100%', 
                                     maxWidth: '300px', 
                                     aspectRatio: '16 / 9', 
-                                    backgroundImage: `url("${imageUrl}")`, 
+                                    backgroundImage: `url(${imageUrl})`, 
                                     backgroundSize: 'contain', 
                                     backgroundPosition: 'center', 
                                     backgroundRepeat: 'no-repeat', 
@@ -484,6 +523,19 @@ function init() {
             fetchComments: async function(threadId: number, page: number) {
                 const query = `query ($threadId: Int, $page: Int) { Page(page: $page, perPage: 25) { pageInfo { hasNextPage, currentPage }, threadComments(threadId: $threadId) { id, comment(asHtml: false), createdAt, likeCount, isLiked, user { name, avatar { large } }, childComments } } }`;
                 const data = await this._fetch(query, { threadId, page });
+                // --- START of Toggleable Logging Block ---
+                // This block will only run if ENABLE_DEBUG_LOGGING is set to true.
+                if (ENABLE_DEBUG_LOGGING) {
+                    if (data.Page.threadComments) {
+                        console.log("--- RAW COMMENT DATA (DEBUG MODE) ---");
+                        for (const c of data.Page.threadComments) {
+                            // We use JSON.stringify to ensure we see the exact string, including newlines (\n) etc.
+                            console.log(`COMMENT ID ${c.id}:`, JSON.stringify(c.comment));
+                        }
+                        console.log("--- END OF RAW COMMENT DATA ---");
+                    }
+                }
+                // --- END of Toggleable Logging Block ---
                 const parsed = (data.Page.threadComments || []).map((c: any) => ({ ...c, childComments: c.childComments || [] }));
                 return { comments: parsed, pageInfo: data.Page.pageInfo };
             },
@@ -980,6 +1032,12 @@ function init() {
 
                 if (view.get() === 'thread' && selectedThread.get()) {
                     const thread = selectedThread.get()!;
+                    if (ENABLE_DEBUG_LOGGING) {
+                        console.log("--- RAW THREAD BODY (DEBUG MODE) ---");
+                        // We use JSON.stringify to see the exact raw string, including newlines (\n)
+                        console.log(`THREAD ID ${thread.id}:`, JSON.stringify(thread.body));
+                        console.log("--- END OF RAW THREAD BODY ---");
+                    }
                     const opSegments = parseComment(thread.body);
                     const currentComments = comments.get();
                     const isAuthor = me && thread.user.name === me.name;
@@ -1265,7 +1323,7 @@ function init() {
                                 position: 'relative',
                                 width: '90vw',
                                 height: '90vh',
-                                backgroundImage: `url("${viewedImageUrl}")`,
+                                backgroundImage: `url(${viewedImageUrl})`,
                                 backgroundSize: 'contain',
                                 backgroundPosition: 'center',
                                 backgroundRepeat: 'no-repeat',
