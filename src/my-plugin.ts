@@ -36,7 +36,7 @@ interface ThreadComment {
     isOptimistic?: boolean;
 }
 interface CommentSegment {
-    type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br' | 'center' | 'youtube' | 'video' | 'user-link' | 'bold-italic';
+    type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br' | 'center' | 'youtube' | 'video' | 'user-link' | 'bold-italic' | 'underline';
     content: string | CommentSegment[]; // Content can be a string or a list of nested segments
     // Additional metadata for specific types
     url?: string;
@@ -123,10 +123,10 @@ function init() {
         function parseComment(text: string): CommentSegment[] {
             const cleanedText = decodeHtmlEntities(text.replace(/<br>/g, '\n'));
 
-            const blocks: (string | { type: 'code-block' | 'center' | 'spoiler' | 'bold'; content: string | CommentSegment[] })[] = [];
+            const blocks: (string | { type: 'code-block' | 'center' | 'spoiler' | 'bold' | 'blockquote'; content: string | CommentSegment[] })[] = [];
             let remainingText = cleanedText;
 
-            const multilineRegex = /(^```([\s\S]*?)```)|(^~~~([\s\S]*?)~~~)|(^~!([\s\S]*?)!~)|(^__([\s\S]*?)__(?=\n\n|\n$|$))/gm;
+            const multilineRegex = /(^```([\s\S]*?)```)|(^~~~([\s\S]*?)~~~)|(^~!([\s\S]*?)!~)|(^__([\s\S]*?)__(?=\n\n|\n$|$))|(^<blockquote>([\s\S]*?)<\/blockquote>)/gm;
             let lastIndex = 0;
             let match;
             while ((match = multilineRegex.exec(remainingText)) !== null) {
@@ -141,6 +141,8 @@ function init() {
                     blocks.push({ type: 'spoiler', content: parseComment(match[6]) });
                 } else if (match[8] !== undefined) {
                     blocks.push({ type: 'bold', content: parseComment(match[8]) });
+                } else if (match[10] !== undefined) {
+                    blocks.push({ type: 'blockquote', content: parseComment(match[10]) });
                 }
                 lastIndex = match.index + match[0].length;
             }
@@ -153,7 +155,11 @@ function init() {
                 { type: 'image', regex: /^<a\s+href="([^"]+)"[^>]*>\s*<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>\s*<\/a>/i, process: (m:RegExpMatchArray) => ({ url: m[1], content: m[2] }) },
                 { type: 'image', regex: /^<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>/i, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
                 { type: 'bold', regex: /^<b>([\s\S]*?)<\/b>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-				{
+                { type: 'italic', regex: /^<i>([\s\S]*?)<\/i>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                { type: 'underline', regex: /^<u>([\s\S]*?)<\/u>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                { type: 'strike', regex: /^<s>([\s\S]*?)<\/s>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                { type: 'strike', regex: /^<strike>([\s\S]*?)<\/strike>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                {
                     type: 'bold-italic',
                     regex: /^\_\_\_([\s\S]+?)\_\_\_/, // For three underscores
                     process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
@@ -169,13 +175,14 @@ function init() {
                     process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
                 },
                 { type: 'link', regex: /^<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), url: m[1] }) },
-				{ type: 'image', regex: /^img([\d%]*)\((.*)\)/, process: (m: RegExpMatchArray) => ({ content: m[2] }) },
+                { type: 'image', regex: /^img([\d%]*)\((.*)\)/, process: (m: RegExpMatchArray) => ({ content: m[2] }) },
                 { type: 'youtube', regex: /^youtube\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: `https://www.youtube.com/watch?v=${m[1]}`, content: `youtube.com/watch?v=${m[1]}` }) },
                 { type: 'video', regex: /^video\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: m[1], content: m[1] }) },
                 { type: 'link', regex: /^\[([^\]]+)\]\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ content: m[1], url: m[2] }) },
+                { type: 'center', regex: /^~~~([\s\S]*?)~~~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'bold', regex: /^\*\*([\s\S]+?)\*\*|^\_\_([\s\S]+?)\_\_/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1] || m[2]) }) },
                 { type: 'italic', regex: /^\*([\s\S]+?)\*|^\_([\s\S]+?)\_/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1] || m[2]) }) },
-                { type: 'strike', regex: /^~~([\s\S]+?)~~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
+                { type: 'strike', regex: /^~~(?!~)([\s\S]+?)(?<!~)~~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'spoiler', regex: /^!~([\s\S]+?)!~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'spoiler', regex: /^~!([\s\S]+?)!~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
                 { type: 'inline-code', regex: /^`([^`]+?)`/, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
@@ -195,8 +202,9 @@ function init() {
                     }
                 },
                 { type: 'heading', regex: /^(#{1,5})\s+(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), level: m[1].length }) },
+                { type: 'heading', regex: /^<h([1-6])>([\s\S]*?)<\/h\1>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), level: parseInt(m[1], 10) }) },
                 { type: 'blockquote', regex: /^>\s?(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'hr', regex: /^(---|___|__)\s*$/, process: () => ({ content: '' }) },
+                { type: 'hr', regex: /^(---|___|__|<hr\s*\/?>)\s*$/i, process: () => ({ content: '' }) },
             ];
 
             const loneFormatterRules = [
@@ -226,7 +234,7 @@ function init() {
                     }
 
                     if (!matched) {
-                        const nextTokenIndex = text.search(/(@[\w-]+|\[|!~|~!|https?:\/\/|`|\*\*|\*|__|_|~~|img\(|youtube\(|video\(|<[a|img|b])/);
+                        const nextTokenIndex = text.search(/(@[\w-]+|\[|!~|~!|https?:\/\/|`|\*\*|\*|__|_|~~~|~~|img\(|youtube\(|video\(|<[a|img|b|i|u|s|strike])/);
                         const plainTextEnd = nextTokenIndex === -1 ? text.length : nextTokenIndex;
                         const plainText = text.slice(0, plainTextEnd > 0 ? plainTextEnd : 1);
 
@@ -245,10 +253,10 @@ function init() {
             const resultSegments: CommentSegment[] = [];
             for (const block of blocks) {
                 if (typeof block === 'object') {
-                    if (block.type === 'center' && typeof block.content === 'string') {
-                         resultSegments.push({ type: 'center', content: parseComment(block.content) });
-                    } else if (block.type === 'spoiler') {
-                         resultSegments.push({ type: 'spoiler', content: block.content as CommentSegment[] });
+                    if ((block.type === 'center' || block.type === 'blockquote') && typeof block.content === 'string') {
+                         resultSegments.push({ type: block.type, content: parseComment(block.content) });
+                    } else if (block.type === 'spoiler' || block.type === 'bold') {
+                         resultSegments.push({ type: block.type, content: block.content as CommentSegment[] });
                     } else {
                         resultSegments.push(block as CommentSegment);
                     }
@@ -333,8 +341,9 @@ function init() {
 			    case 'bold-italic': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontWeight: 'bold', fontStyle: 'italic' });
                 case 'bold': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontWeight: 'bold' });
                 case 'italic': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontStyle: 'italic' });
+                case 'underline': return createWrapper(renderContent(segment.content as CommentSegment[]), { textDecoration: 'underline' });
                 case 'strike': return createWrapper(renderContent(segment.content as CommentSegment[]), { textDecoration: 'line-through' });
-                case 'heading': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontSize: '1.25em', fontWeight: 'semibold', marginTop: '0.5em', marginBottom: '0.5em'}, 'block');
+                case 'heading': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontSize: `${1.5 - (segment.level! * 0.1)}em`, fontWeight: 'semibold', marginTop: '0.5em', marginBottom: '0.5em'}, 'block');
                 case 'hr': return tray.div([], { style: { borderTop: '1px solid #4A5568', margin: '8px 0', display: 'block' } });
                 case 'blockquote': return createWrapper(renderContent(segment.content as CommentSegment[]), { borderLeft: '3px solid #4A5568', paddingLeft: '8px', color: '#A0AEC0', margin: '8px 0' }, 'block');
                 case 'center': return createWrapper(renderContent(segment.content as CommentSegment[]), { textAlign: 'center', margin: '8px 0' }, 'block');
