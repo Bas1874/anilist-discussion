@@ -36,7 +36,7 @@ interface ThreadComment {
     isOptimistic?: boolean;
 }
 interface CommentSegment {
-    type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br' | 'center' | 'youtube' | 'video' | 'user-link';
+    type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br' | 'center' | 'youtube' | 'video' | 'user-link' | 'bold-italic';
     content: string | CommentSegment[]; // Content can be a string or a list of nested segments
     // Additional metadata for specific types
     url?: string;
@@ -123,10 +123,10 @@ function init() {
         function parseComment(text: string): CommentSegment[] {
             const cleanedText = decodeHtmlEntities(text.replace(/<br>/g, '\n'));
 
-            const blocks: (string | { type: 'code-block' | 'center' | 'spoiler'; content: string | CommentSegment[] })[] = [];
+            const blocks: (string | { type: 'code-block' | 'center' | 'spoiler' | 'bold'; content: string | CommentSegment[] })[] = [];
             let remainingText = cleanedText;
 
-            const multilineRegex = /(^```([\s\S]*?)```)|(^~~~([\s\S]*?)~~~)|(^~!([\s\S]*?)!~)/gm;
+            const multilineRegex = /(^```([\s\S]*?)```)|(^~~~([\s\S]*?)~~~)|(^~!([\s\S]*?)!~)|(^__([\s\S]*?)__(?=\n\n|\n$|$))/gm;
             let lastIndex = 0;
             let match;
             while ((match = multilineRegex.exec(remainingText)) !== null) {
@@ -139,6 +139,8 @@ function init() {
                     blocks.push({ type: 'center', content: match[4] });
                 } else if (match[6] !== undefined) {
                     blocks.push({ type: 'spoiler', content: parseComment(match[6]) });
+                } else if (match[8] !== undefined) {
+                    blocks.push({ type: 'bold', content: parseComment(match[8]) });
                 }
                 lastIndex = match.index + match[0].length;
             }
@@ -151,7 +153,7 @@ function init() {
                 { type: 'image', regex: /^<a\s+href="([^"]+)"[^>]*>\s*<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>\s*<\/a>/i, process: (m:RegExpMatchArray) => ({ url: m[1], content: m[2] }) },
                 { type: 'image', regex: /^<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>/i, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
                 { type: 'bold', regex: /^<b>([\s\S]*?)<\/b>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-				                {
+				{
                     type: 'bold-italic',
                     regex: /^\_\_\_([\s\S]+?)\_\_\_/, // For three underscores
                     process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
@@ -159,6 +161,11 @@ function init() {
                 {
                     type: 'bold-italic',
                     regex: /^\*\*\*([\s\S]+?)\*\*\*/, // For three asterisks
+                    process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
+                },
+                {
+                    type: 'bold-italic',
+                    regex: /^___([\s\S]+?)_/,
                     process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
                 },
                 { type: 'link', regex: /^<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), url: m[1] }) },
@@ -189,7 +196,7 @@ function init() {
                 },
                 { type: 'heading', regex: /^(#{1,5})\s+(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), level: m[1].length }) },
                 { type: 'blockquote', regex: /^>\s?(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'hr', regex: /^---\s*$/, process: () => ({ content: '' }) },
+                { type: 'hr', regex: /^(---|___|__)\s*$/, process: () => ({ content: '' }) },
             ];
 
             const loneFormatterRules = [
@@ -375,7 +382,7 @@ function init() {
                         });
                     }
 
-                                case 'image':
+                case 'image':
                     const imageUrl = segment.content as string;
                     const linkUrlForImage = segment.url || imageUrl;
                     return tray.stack([
@@ -385,14 +392,13 @@ function init() {
                                     width: '100%', 
                                     maxWidth: '300px', 
                                     aspectRatio: '16 / 9', 
-                                    backgroundImage: `url("${imageUrl}")`,
+                                    backgroundImage: `url("${imageUrl}")`, 
                                     backgroundSize: 'contain', 
                                     backgroundPosition: 'center', 
                                     backgroundRepeat: 'no-repeat', 
                                     borderRadius: '4px',
-                                    // SOLUTION: Replace background color with a border
-                                    backgroundColor: 'transparent', // Keep background clear
-                                    border: '1px solid #2D3748'    // Add a subtle border
+                                    backgroundColor: 'transparent',
+                                    border: '1px solid #2D3748'
                                 } 
                             }),
                             tray.button({
