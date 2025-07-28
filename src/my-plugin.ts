@@ -375,7 +375,7 @@ function init() {
                         });
                     }
 
-                case 'image':
+                                case 'image':
                     const imageUrl = segment.content as string;
                     const linkUrlForImage = segment.url || imageUrl;
                     return tray.stack([
@@ -389,8 +389,10 @@ function init() {
                                     backgroundSize: 'contain', 
                                     backgroundPosition: 'center', 
                                     backgroundRepeat: 'no-repeat', 
-                                    borderRadius: '4px', 
-                                    backgroundColor: '#2D3748' 
+                                    borderRadius: '4px',
+                                    // SOLUTION: Replace background color with a border
+                                    backgroundColor: 'transparent', // Keep background clear
+                                    border: '1px solid #2D3748'    // Add a subtle border
                                 } 
                             }),
                             tray.button({
