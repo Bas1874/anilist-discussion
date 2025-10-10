@@ -501,10 +501,10 @@ function init() {
         const selectionState = ctx.state<{ start: number, end: number, text: string } | null>(null);
         const episodeDiscussions = ctx.state<Thread[]>([]);
         const generalDiscussions = ctx.state<Thread[]>([]);
-        const displayedGeneralDiscussions = ctx.state<Thread[]>([]);
         const generalDiscussionsPage = ctx.state(1);
         const generalDiscussionsHasNextPage = ctx.state(false);
-        const GENERAL_DISCUSSIONS_PER_PAGE = 20;
+        // NEW: Token for aborting stale requests
+        const currentFetchToken = ctx.state<number | null>(null);
 
 
         // --- API SERVICE (ABSTRACTION) ---
@@ -527,32 +527,43 @@ function init() {
                 const data = await this._fetch(query, {});
                 return data.Viewer;
             },
-            fetchThreadsPage: async function(mediaId: number, sort: string, page: number) {
-                const query = `query ($mediaCategoryId: Int, $sort: [ThreadSort], $page: Int) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage, currentPage }, threads(mediaCategoryId: $mediaCategoryId, sort: $sort) { id, title, body, createdAt, replyCount, siteUrl, repliedAt, viewCount, user { name, avatar { large } }, replyUser { name }, categories { name } } } }`;
-                const data = await this._fetch(query, { mediaCategoryId: mediaId, sort: [sort], page: page });
+            // CHANGED: fetchThreadsPage now accepts an optional categoryId for filtering
+            fetchThreadsPage: async function(params: { mediaId: number; sort: string; page: number; categoryId?: number }) {
+                const { mediaId, sort, page, categoryId } = params;
+                const query = `
+                    query ($mediaCategoryId: Int, $sort: [ThreadSort], $page: Int, $categoryId: Int) {
+                        Page(page: $page, perPage: 50) {
+                            pageInfo { hasNextPage, currentPage }
+                            threads(mediaCategoryId: $mediaCategoryId, sort: $sort, categoryId: $categoryId) {
+                                id, title, body, createdAt, replyCount, siteUrl, repliedAt, viewCount,
+                                user { name, avatar { large } },
+                                replyUser { name },
+                                categories { name }
+                            }
+                        }
+                    }`;
+                const variables = { mediaCategoryId: mediaId, sort: [sort], page, categoryId };
+                const data = await this._fetch(query, variables);
+                
                 const processedThreads = (data.Page.threads || []).map((thread: any) => {
                     const isEpisode = thread.categories?.some((c: any) => c.name === "Release Discussion");
                     const match = thread.title.match(/(?:Episode|Ep\.?)\s*(\d+)/i);
-                    return { ...thread, isEpisode: isEpisode, episodeNumber: match ? parseInt(match[1], 10) : 0 };
+                    return { ...thread, isEpisode, episodeNumber: match ? parseInt(match[1], 10) : 0 };
                 });
                 return { threads: processedThreads, pageInfo: data.Page.pageInfo };
             },
             fetchComments: async function(threadId: number, page: number) {
                 const query = `query ($threadId: Int, $page: Int) { Page(page: $page, perPage: 25) { pageInfo { hasNextPage, currentPage }, threadComments(threadId: $threadId) { id, comment(asHtml: false), createdAt, likeCount, isLiked, user { name, avatar { large } }, childComments } } }`;
                 const data = await this._fetch(query, { threadId, page });
-                // --- START of Toggleable Logging Block ---
-                // This block will only run if ENABLE_DEBUG_LOGGING is set to true.
                 if (ENABLE_DEBUG_LOGGING) {
                     if (data.Page.threadComments) {
                         console.log("--- RAW COMMENT DATA (DEBUG MODE) ---");
                         for (const c of data.Page.threadComments) {
-                            // We use JSON.stringify to ensure we see the exact string, including newlines (\n) etc.
                             console.log(`COMMENT ID ${c.id}:`, JSON.stringify(c.comment));
                         }
                         console.log("--- END OF RAW COMMENT DATA ---");
                     }
                 }
-                // --- END of Toggleable Logging Block ---
                 const parsed = (data.Page.threadComments || []).map((c: any) => ({ ...c, childComments: c.childComments || [] }));
                 return { comments: parsed, pageInfo: data.Page.pageInfo };
             },
@@ -591,47 +602,101 @@ function init() {
             } catch (e: any) { console.error("Failed to fetch viewer info:", e.message); }
         };
 
-        const fetchAndSeparateAllThreads = async (mediaId: number) => {
-            if (isLoading.get()) return;
+        // CHANGED: Replaced old fetcher with new parallel, abortable functions
+        const loadInitialDiscussions = async (mediaId: number) => {
+            // NEW: Generate a unique token for this fetch operation
+            const token = Date.now();
+            currentFetchToken.set(token);
         
             isLoading.set(true);
             error.set(null);
             episodeDiscussions.set([]);
             generalDiscussions.set([]);
-            displayedGeneralDiscussions.set([]);
             generalDiscussionsPage.set(1);
+            generalDiscussionsHasNextPage.set(false);
         
             try {
                 const animeEntry = await ctx.anime.getAnimeEntry(mediaId);
+                // NEW: Abort if a newer request has started
+                if (token !== currentFetchToken.get()) return;
                 currentMediaTitle.set(animeEntry?.media?.title?.userPreferred || null);
         
-                let allThreads: Thread[] = [];
-                let page = 1;
-                let hasNext = true;
+                // NEW: Fetch episode discussions and all discussions in parallel
+                const [episodeResults, allThreadsResults] = await Promise.all([
+                    // AniList Category ID 5 is for "Release Discussion"
+                    anilistApi.fetchThreadsPage({ mediaId, sort: threadSort.get(), page: 1, categoryId: 5 }),
+                    anilistApi.fetchThreadsPage({ mediaId, sort: threadSort.get(), page: 1 })
+                ]);
+                
+                // NEW: Abort if a newer request has started after fetches complete
+                if (token !== currentFetchToken.get()) return;
         
-                while (hasNext) {
-                    const { threads: fetchedThreads, pageInfo } = await anilistApi.fetchThreadsPage(mediaId, threadSort.get(), page);
-                    allThreads.push(...fetchedThreads);
-                    hasNext = pageInfo.hasNextPage;
-                    page++;
-                }
-        
-                const epDiscussions = allThreads.filter(t => t.isEpisode);
-                const genDiscussions = allThreads.filter(t => !t.isEpisode);
+                const epDiscussions = episodeResults.threads;
+                // Filter out episode discussions from the "all" list to get general discussions
+                const genDiscussions = allThreadsResults.threads.filter(t => !t.isEpisode);
         
                 episodeDiscussions.set(epDiscussions);
                 generalDiscussions.set(genDiscussions);
-        
-                displayedGeneralDiscussions.set(genDiscussions.slice(0, GENERAL_DISCUSSIONS_PER_PAGE));
-                generalDiscussionsHasNextPage.set(genDiscussions.length > GENERAL_DISCUSSIONS_PER_PAGE);
+                generalDiscussionsPage.set(1);
+                // The "all threads" pagination determines if there are more general discussions
+                generalDiscussionsHasNextPage.set(allThreadsResults.pageInfo.hasNextPage);
         
             } catch (e: any) {
-                error.set(e.message);
+                if (token === currentFetchToken.get()) {
+                    error.set(e.message);
+                }
             } finally {
-                isLoading.set(false);
+                if (token === currentFetchToken.get()) {
+                    isLoading.set(false);
+                }
             }
         };
-
+        
+        const loadMoreDiscussions = async () => {
+            if (isLoading.get() || !generalDiscussionsHasNextPage.get()) return;
+        
+            // NEW: Abortable request logic
+            const token = Date.now();
+            currentFetchToken.set(token);
+            
+            isLoading.set(true);
+            const nextPage = generalDiscussionsPage.get() + 1;
+            const mediaId = currentMediaId.get();
+            if (!mediaId) {
+                isLoading.set(false);
+                return;
+            }
+        
+            try {
+                // Fetch the next page of ALL threads, as we don't know if they are general or episode
+                const { threads, pageInfo } = await anilistApi.fetchThreadsPage({ mediaId, sort: threadSort.get(), page: nextPage });
+                
+                // NEW: Abort if a newer request has started
+                if (token !== currentFetchToken.get()) return;
+        
+                const newEpDiscussions = threads.filter(t => t.isEpisode);
+                const newGenDiscussions = threads.filter(t => !t.isEpisode);
+        
+                if (newEpDiscussions.length > 0) {
+                    episodeDiscussions.set(current => [...current, ...newEpDiscussions].sort((a, b) => a.episodeNumber - b.episodeNumber));
+                }
+                if (newGenDiscussions.length > 0) {
+                    generalDiscussions.set(current => [...current, ...newGenDiscussions]);
+                }
+        
+                generalDiscussionsPage.set(nextPage);
+                generalDiscussionsHasNextPage.set(pageInfo.hasNextPage);
+        
+            } catch (e: any) {
+                if (token === currentFetchToken.get()) {
+                    error.set(e.message);
+                }
+            } finally {
+                if (token === currentFetchToken.get()) {
+                    isLoading.set(false);
+                }
+            }
+        };
 
         const fetchComments = async (threadId: number, page: number = 1) => {
             isLoading.set(true); error.set(null);
@@ -781,7 +846,7 @@ function init() {
 
                 selectedThread.set(newThreadData);
                 view.set('thread');
-                fetchAndSeparateAllThreads(mediaId);
+                loadInitialDiscussions(mediaId);
             } catch (e: any) {
                 error.set(`Failed to ${id ? 'update' : 'create'} discussion: ` + e.message);
                 ctx.toast.alert(`Failed to ${id ? 'update' : 'create'} discussion.`);
@@ -799,7 +864,7 @@ function init() {
                 await anilistApi.deleteThread(threadId);
                 ctx.toast.success("Discussion deleted.");
                 view.set('list');
-                fetchAndSeparateAllThreads(currentMediaId.get()!);
+                loadInitialDiscussions(currentMediaId.get()!);
             } catch (e: any) {
                 error.set("Failed to delete discussion: " + e.message);
                 ctx.toast.alert("Failed to delete discussion.");
@@ -822,7 +887,7 @@ function init() {
             fetchViewer();
             const mediaId = currentMediaId.get();
             if (mediaId) {
-                fetchAndSeparateAllThreads(mediaId);
+                loadInitialDiscussions(mediaId);
             }
         });
 
@@ -835,7 +900,7 @@ function init() {
         ctx.effect(() => { 
             const mediaId = currentMediaId.get();
             if (mediaId) {
-                fetchAndSeparateAllThreads(mediaId);
+                loadInitialDiscussions(mediaId);
             }
         }, [threadSort]);
 
@@ -854,17 +919,9 @@ function init() {
         ctx.registerEventHandler("go-to-create-view", () => { threadTitleInputRef.setValue(""); threadBodyInputRef.setValue(""); view.set('create'); });
         ctx.registerEventHandler("submit-thread", () => handleSaveThread());
         ctx.registerEventHandler("submit-edit-thread", () => handleSaveThread(selectedThread.get()!.id));
+        // CHANGED: Use the new loadMore function
         ctx.registerEventHandler('load-more-general-threads', () => {
-            const currentPage = generalDiscussionsPage.get();
-            const allGeneral = generalDiscussions.get();
-            const nextStartIndex = currentPage * GENERAL_DISCUSSIONS_PER_PAGE;
-            const nextEndIndex = nextStartIndex + GENERAL_DISCUSSIONS_PER_PAGE;
-            
-            const newThreads = allGeneral.slice(nextStartIndex, nextEndIndex);
-            
-            displayedGeneralDiscussions.set(d => [...d, ...newThreads]);
-            generalDiscussionsPage.set(p => p + 1);
-            generalDiscussionsHasNextPage.set(allGeneral.length > nextEndIndex);
+            loadMoreDiscussions();
         });
         
         function renderToolbar(fieldRef: any) {
@@ -944,7 +1001,7 @@ function init() {
             const mainContent = (() => {
                 if (!currentMediaId.get()) return centralMessage("Navigate to an anime to see discussions.");
 
-                if (isLoading.get() && episodeDiscussions.get().length === 0 && displayedGeneralDiscussions.get().length === 0 && !['create', 'edit-thread'].includes(view.get())) {
+                if (isLoading.get() && episodeDiscussions.get().length === 0 && generalDiscussions.get().length === 0 && !['create', 'edit-thread'].includes(view.get())) {
                      return tray.stack([
                         tray.text({ text: "Episode Discussions", size: "lg", align: "center", weight: "semibold" }),
                         tray.flex(Array(8).fill(0).map(() => tray.div([], { style: { width: '40px', height: '30px', backgroundColor: '#2D3748', borderRadius: '4px' } })), { style: { gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: '8px', opacity: 0.5 } }),
@@ -1132,7 +1189,7 @@ function init() {
                 }
 
                 const epThreads = episodeDiscussions.get();
-                const genThreads = displayedGeneralDiscussions.get();
+                const genThreads = generalDiscussions.get();
 
                 if (epThreads.length > 0 || genThreads.length > 0) {
                     const sortOptions = [
