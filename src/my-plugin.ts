@@ -3,16 +3,16 @@
 /// <reference path="./system.d.ts" />
 /// <reference path="./core.d.ts" />
 
-const ENABLE_DEBUG_LOGGING = false; // Set to `true` to see raw data, `false` for normal use. (in the Console!)
+const ENABLE_DEBUG_LOGGING = false; 
 
-// Interfaces to define our data structures
+// Interfaces
 interface User {
     name: string;
     avatar: { large: string; };
 }
 interface Thread {
     id: number;
-    title:string;
+    title: string;
     body: string;
     createdAt: number;
     replyCount: number;
@@ -36,39 +36,39 @@ interface ThreadComment {
     isOptimistic?: boolean;
 }
 interface CommentSegment {
-    type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br' | 'center' | 'youtube' | 'video' | 'user-link' | 'bold-italic' | 'underline';
-    content: string | CommentSegment[]; // Content can be a string or a list of nested segments
-    // Additional metadata for specific types
+    type: 'text' | 'spoiler' | 'image' | 'link' | 'bold' | 'italic' | 'strike' | 'heading' | 'hr' | 'blockquote' | 'inline-code' | 'code-block' | 'br' | 'center' | 'youtube' | 'video' | 'user-link' | 'list-item';
+    content: string | CommentSegment[]; 
     url?: string;
     level?: number;
     username?: string;
+    width?: string;
 }
 
+interface ParsingRule {
+    name: string;
+    regex: RegExp;
+    renderer: (match: RegExpMatchArray, parse: (text: string) => CommentSegment[]) => CommentSegment;
+}
 
 function init() {
     $ui.register((ctx) => {
+        const ANILIST_EPISODE_DISCUSSION_CATEGORY_ID = 5;
 
-        // --- Function to inject final custom scrollbar styles ---
+        // --- Styles ---
         const stylesInjected = ctx.state(false);
         const injectScrollbarStyles = async () => {
             if (stylesInjected.get()) return;
             try {
                 const css = `
-                    ::-webkit-scrollbar {
-                        width: 12px;
-                    }
-                    ::-webkit-scrollbar-track {
-                        background: transparent;
-                    }
+                    ::-webkit-scrollbar { width: 12px; }
+                    ::-webkit-scrollbar-track { background: transparent; }
                     ::-webkit-scrollbar-thumb {
                         background-color: rgba(255, 255, 255, 0.2);
                         border-radius: 10px;
                         border: 2px solid transparent;
                         background-clip: content-box;
                     }
-                    ::-webkit-scrollbar-thumb:hover {
-                        background-color: rgba(255, 255, 255, 0.4);
-                    }
+                    ::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.4); }
                 `;
                 const head = await ctx.dom.queryOne("head");
                 if (head) {
@@ -78,22 +78,31 @@ function init() {
                     stylesInjected.set(true);
                 }
             } catch (e) {
-                console.error("Failed to inject scrollbar styles:", e);
+                console.error("Failed to inject styles:", e);
             }
         };
-        // Inject styles when the UI context is registered
         injectScrollbarStyles();
 
-        // --- HELPER FUNCTIONS ---
-
+        // --- Helper Functions ---
         function decodeHtmlEntities(text: string): string {
-            if (!text) return "";
-            return text.replace(/&#(\d+);/g, (match, dec) => {
-                return String.fromCodePoint(parseInt(dec, 10));
-            }).replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
+            let str = text
+                .replace(/<\/?br\s*\/?>/gi, '\n')
+                .replace(/\r\n/g, '\n');
+
+            const entities: Record<string, string> = {
+                '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&nbsp;': ' '
+            };
+            return str.replace(/&[a-z]+;|&#\d+;/gi, (match) => {
+                const lower = match.toLowerCase();
+                if (entities[lower]) return entities[lower];
+                if (lower.startsWith('&#')) {
+                    const code = parseInt(lower.slice(2, -1), 10);
+                    return isNaN(code) ? match : String.fromCodePoint(code);
+                }
+                return match;
+            });
         }
         
-        // --- SVG Icon Definitions ---
         const eyeIconSvg = `<svg aria-hidden="true" focusable="false" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><path fill="currentColor" d="M572.52 241.4C518.29 135.59 410.93 64 288 64S57.68 135.64 3.48 241.41a32.35 32.35 0 0 0 0 29.19C57.71 376.41 165.07 448 288 448s230.32-71.64 284.52-177.41a32.35 32.35 0 0 0 0-29.19zM288 400a144 144 0 1 1 144-144 143.93 143.93 0 0 1-144 144zm0-240a95.31 95.31 0 0 0-25.31 3.79 47.85 47.85 0 0 1-66.9 66.9A95.78 95.78 0 1 0 288 160z"></path></svg>`;
         const commentsIconSvg = `<svg aria-hidden="true" focusable="false" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><path fill="currentColor" d="M416 192c0-88.4-93.1-160-208-160S0 103.6 0 192c0 34.3 14.1 65.9 38 92-13.4 30.2-35.5 54.2-35.8 54.5-2.2 2.3-2.8 5.7-1.5 8.7S4.8 352 8 352c36.6 0 66.9-12.3 88.7-25 32.2 15.7 70.3 25 111.3 25 114.9 0 208-71.6 208-160zm122 220c23.9-26 38-57.7 38-92 0-66.9-53.5-124.2-129.3-148.1.9 6.6 1.3 13.3 1.3 20.1 0 105.9-107.7 192-240 192-10.8 0-21.3-.8-31.7-1.9C207.8 439.6 281.8 480 368 480c41 0 79.1-9.2 111.3-25 21.8 12.7 52.1 25 88.7 25 3.2 0 6.1-1.9 7.3-4.8 1.3-2.9.7-6.3-1.5-8.7-.3-.3-22.4-24.2-35.8-54.5z"></path></svg>`;
 
@@ -102,12 +111,8 @@ function init() {
             return tray.flex([
                 tray.div([], {
                     style: {
-                        width: '18px',
-                        height: '18px',
-                        maskImage: `url(${encodedSvg})`,
-                        maskSize: 'contain',
-                        maskRepeat: 'no-repeat',
-                        maskPosition: 'center',
+                        width: '18px', height: '18px',
+                        maskImage: `url(${encodedSvg})`, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center',
                         backgroundColor: 'currentColor',
                     }
                 }),
@@ -116,340 +121,464 @@ function init() {
         }
 
         // ===================================================================================
-        // START OF NEW PARSING ENGINE
-        // This version correctly handles all AniList formatting, including nesting.
+        // PARSING ENGINE
         // ===================================================================================
 
-        function parseComment(text: string): CommentSegment[] {
-            const cleanedText = decodeHtmlEntities(text.replace(/<br>/g, '\n'));
-
-            const blocks: (string | { type: 'code-block' | 'center' | 'spoiler' | 'bold' | 'blockquote'; content: string | CommentSegment[] })[] = [];
-            let remainingText = cleanedText;
-
-            const multilineRegex = /(^```([\s\S]*?)```)|(^~~~([\s\S]*?)~~~)|(^~!([\s\S]*?)!~)|(^__([\s\S]*?)__(?=\n\n|\n$|$))|(^<blockquote>([\s\S]*?)<\/blockquote>)/gm;
-            let lastIndex = 0;
-            let match;
-            while ((match = multilineRegex.exec(remainingText)) !== null) {
-                if (match.index > lastIndex) {
-                    blocks.push(remainingText.substring(lastIndex, match.index));
-                }
-                if (match[2] !== undefined) {
-                    blocks.push({ type: 'code-block', content: match[2] });
-                } else if (match[4] !== undefined) {
-                    blocks.push({ type: 'center', content: match[4] });
-                } else if (match[6] !== undefined) {
-                    blocks.push({ type: 'spoiler', content: parseComment(match[6]) });
-                } else if (match[8] !== undefined) {
-                    blocks.push({ type: 'bold', content: parseComment(match[8]) });
-                } else if (match[10] !== undefined) {
-                    blocks.push({ type: 'blockquote', content: parseComment(match[10]) });
-                }
-                lastIndex = match.index + match[0].length;
-            }
-            if (lastIndex < remainingText.length) {
-                blocks.push(remainingText.substring(lastIndex));
-            }
-
-            const inlineRules = [
-                { type: 'user-link', regex: /^@([\w-]+)/, process: (m: RegExpMatchArray) => ({ content: m[0], username: m[1] }) },
-                { type: 'image', regex: /^<a\s+href="([^"]+)"[^>]*>\s*<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>\s*<\/a>/i, process: (m:RegExpMatchArray) => ({ url: m[1], content: m[2] }) },
-                { type: 'image', regex: /^<img[^>]*\s(?:data-src|src)="([^"]+)"[^>]*>/i, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
-                { type: 'bold', regex: /^<b>([\s\S]*?)<\/b>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'italic', regex: /^<i>([\s\S]*?)<\/i>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'underline', regex: /^<u>([\s\S]*?)<\/u>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'strike', regex: /^<s>([\s\S]*?)<\/s>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'strike', regex: /^<strike>([\s\S]*?)<\/strike>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                {
-                    type: 'bold-italic',
-                    regex: /^\_\_\_([\s\S]+?)\_\_\_/, // For three underscores
-                    process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
-                },
-                {
-                    type: 'bold-italic',
-                    regex: /^\*\*\*([\s\S]+?)\*\*\*/, // For three asterisks
-                    process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
-                },
-                {
-                    type: 'bold-italic',
-                    regex: /^___([\s\S]+?)_/,
-                    process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) })
-                },
-                { type: 'link', regex: /^<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), url: m[1] }) },
-                { type: 'image', regex: /^img([\d%]*)\((.*)\)/, process: (m: RegExpMatchArray) => ({ content: m[2] }) },
-                { type: 'youtube', regex: /^youtube\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: `https://www.youtube.com/watch?v=${m[1]}`, content: `youtube.com/watch?v=${m[1]}` }) },
-                { type: 'video', regex: /^video\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ type: 'link', url: m[1], content: m[1] }) },
-                { type: 'link', regex: /^\[([^\]]+)\]\(([^)]+)\)/, process: (m: RegExpMatchArray) => ({ content: m[1], url: m[2] }) },
-                { type: 'center', regex: /^~~~([\s\S]*?)~~~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'bold', regex: /^\*\*([\s\S]+?)\*\*|^\_\_([\s\S]+?)\_\_/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1] || m[2]) }) },
-                { type: 'italic', regex: /^\*([\s\S]+?)\*|^\_([\s\S]+?)\_/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1] || m[2]) }) },
-                { type: 'strike', regex: /^~~(?!~)([\s\S]+?)(?<!~)~~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'spoiler', regex: /^!~([\s\S]+?)!~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'spoiler', regex: /^~!([\s\S]+?)!~/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'inline-code', regex: /^`([^`]+?)`/, process: (m: RegExpMatchArray) => ({ content: m[1] }) },
-                { type: 'link', regex: /^(https?:\/\/[^\s<>"'{}|\\^`[\]]+)/, process: (m: RegExpMatchArray) => ({ content: m[1], url: m[1] }) },
-            ];
-
-            const lineStartRules = [
-                {
-                    type: 'center',
-                    regex: /^#<center>(.*)/,
-                    process: (m: RegExpMatchArray) => {
-                        let content = m[1]; 
-                        if (content.startsWith('____') && content.endsWith('____')) {
-                            content = `___${content.slice(4, -4)}___`;
-                        }
-                        return { content: parseInline(content) };
+        const INLINE_RULES: ParsingRule[] = [
+            {
+                name: 'anilist-sized-image',
+                regex: /^img([\d%]*)\(([^)]+)\)/i, 
+                renderer: (m) => {
+                    let w = m[1];
+                    if (w && !w.includes('%')) {
+                        w = w + 'px';
                     }
-                },
-                { type: 'heading', regex: /^(#{1,5})\s+(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), level: m[1].length }) },
-                { type: 'heading', regex: /^<h([1-6])>([\s\S]*?)<\/h\1>/i, process: (m: RegExpMatchArray) => ({ content: parseInline(m[2]), level: parseInt(m[1], 10) }) },
-                { type: 'blockquote', regex: /^>\s?(.*)/, process: (m: RegExpMatchArray) => ({ content: parseInline(m[1]) }) },
-                { type: 'hr', regex: /^(---|___|__|<hr\s*\/?>)\s*$/i, process: () => ({ content: '' }) },
-            ];
+                    return { type: 'image', url: m[2], width: w, content: 'image' };
+                }
+            },
+            {
+                name: 'anilist-video',
+                regex: /^(?:webm|video)\(([^)]+)\)/i,
+                renderer: (m) => ({ type: 'video', url: m[1], content: m[1] })
+            },
+            {
+                name: 'anilist-youtube',
+                regex: /^youtube\(([^)]+)\)/i,
+                renderer: (m) => {
+                    const val = m[1];
+                    const idMatch = val.match(/v=([^&]+)/) || val.match(/youtu\.be\/([^?]+)/);
+                    const id = idMatch ? idMatch[1] : val;
+                    return { type: 'youtube', url: `https://www.youtube.com/watch?v=${id}`, content: id };
+                }
+            },
+            {
+                name: 'html-image',
+                regex: /^<img\s+[^>]*src="([^"]+)"[^>]*>/i,
+                renderer: (m) => ({ type: 'image', url: m[1], content: 'image' })
+            },
+            {
+                name: 'markdown-image',
+                regex: /^!\[([^\]]*)\]\(([^)]+)\)/,
+                renderer: (m) => ({ type: 'image', content: m[1], url: m[2] })
+            },
+            {
+                name: 'html-link',
+                regex: /^<a\s+href="([^"]+)"[^>]*>(.*?)<\/a>/i,
+                renderer: (m, parse) => ({ type: 'link', url: m[1], content: parse(m[2]) })
+            },
+            {
+                name: 'markdown-link',
+                regex: /^\[([^\]]+)\]\(([^)]+)\)/,
+                renderer: (m, parse) => ({ type: 'link', content: parse(m[1]), url: m[2] })
+            },
+            {
+                name: 'user-link',
+                regex: /^@([\w-]+)/,
+                renderer: (m) => ({ type: 'user-link', content: m[0], username: m[1] })
+            },
+            {
+                name: 'anilist-spoiler',
+                regex: /^(?:~!|!~)([\s\S]+?)(?:!~|~!)/,
+                renderer: (m, parse) => ({ type: 'spoiler', content: parse(m[1]) })
+            },
+            {
+                name: 'inline-code',
+                regex: /^`([^`]+)`/,
+                renderer: (m) => ({ type: 'inline-code', content: m[1] })
+            },
+            {
+                name: 'bold',
+                regex: /^(\*\*|__)(?=\S)([\s\S]*?\S)\1/,
+                renderer: (m, parse) => ({ type: 'bold', content: parse(m[2]) })
+            },
+            {
+                name: 'bold-html',
+                regex: /^(?:<b>|<strong>)([\s\S]+?)(?:<\/b>|<\/strong>)/i,
+                renderer: (m, parse) => ({ type: 'bold', content: parse(m[1]) })
+            },
+            {
+                name: 'italic',
+                regex: /^(\*|_)(?=\S)([\s\S]*?\S)\1/,
+                renderer: (m, parse) => ({ type: 'italic', content: parse(m[2]) })
+            },
+            {
+                name: 'italic-html',
+                regex: /^(?:<i>|<em>)([\s\S]+?)(?:<\/i>|<\/em>)/i,
+                renderer: (m, parse) => ({ type: 'italic', content: parse(m[1]) })
+            },
+            {
+                name: 'strike',
+                regex: /^~~([\s\S]+?)~~/,
+                renderer: (m, parse) => ({ type: 'strike', content: parse(m[1]) })
+            },
+            {
+                name: 'strike-html',
+                regex: /^(?:<del>|<strike>)([\s\S]+?)(?:<\/del>|<\/strike>)/i,
+                renderer: (m, parse) => ({ type: 'strike', content: parse(m[1]) })
+            },
+            {
+                name: 'auto-url',
+                regex: /^(https?:\/\/[^\s<]+)/,
+                renderer: (m) => ({ type: 'link', url: m[1], content: m[1] })
+            }
+        ];
 
-            const loneFormatterRules = [
-                { type: 'bold', regex: /^\*\*([\s\S]+?)\*\*$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
-                { type: 'bold', regex: /^\_\_([\s\S]+?)\_\_$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
-                { type: 'italic', regex: /^\*([\s\S]+?)\*$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
-                { type: 'italic', regex: /^\_([\s\S]+?)\_$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
-                { type: 'strike', regex: /^~~([\s\S]+?)~~$/, process: (m: RegExpMatchArray) => parseInline(m[1]) },
-            ];
+        function parseInline(text: string): CommentSegment[] {
+            const segments: CommentSegment[] = [];
+            let cursor = 0;
 
-            function parseInline(line: string): CommentSegment[] {
-                if (!line) return [];
-                const segments: CommentSegment[] = [];
-                let text = line;
+            while (cursor < text.length) {
+                const remaining = text.slice(cursor);
+                let bestMatch: { rule: ParsingRule, match: RegExpMatchArray } | null = null;
 
-                while (text.length > 0) {
-                    let matched = false;
-                    for (const rule of inlineRules) {
-                        const match = text.match(rule.regex);
-                        if (match) {
-                            matched = true;
-                            const processed = rule.process(match);
-                            segments.push({ type: rule.type as CommentSegment['type'], ...processed });
-                            text = text.slice(match[0].length);
-                            break;
-                        }
-                    }
-
-                    if (!matched) {
-                        const nextTokenIndex = text.search(/(@[\w-]+|\[|!~|~!|https?:\/\/|`|\*\*|\*|__|_|~~~|~~|img\(|youtube\(|video\(|<[a|img|b|i|u|s|strike])/);
-                        const plainTextEnd = nextTokenIndex === -1 ? text.length : nextTokenIndex;
-                        const plainText = text.slice(0, plainTextEnd > 0 ? plainTextEnd : 1);
-
-                        const lastSegment = segments[segments.length - 1];
-                        if (lastSegment && lastSegment.type === 'text') {
-                             (lastSegment.content as string) += plainText;
-                        } else {
-                            segments.push({ type: 'text', content: plainText });
-                        }
-                        text = text.slice(plainText.length);
+                for (const rule of INLINE_RULES) {
+                    const match = remaining.match(rule.regex);
+                    if (match && match.index === 0) {
+                        bestMatch = { rule, match };
+                        break; 
                     }
                 }
-                return segments;
-            }
 
-            const resultSegments: CommentSegment[] = [];
-            for (const block of blocks) {
-                if (typeof block === 'object') {
-                    if ((block.type === 'center' || block.type === 'blockquote') && typeof block.content === 'string') {
-                         resultSegments.push({ type: block.type, content: parseComment(block.content) });
-                    } else if (block.type === 'spoiler' || block.type === 'bold') {
-                         resultSegments.push({ type: block.type, content: block.content as CommentSegment[] });
-                    } else {
-                        resultSegments.push(block as CommentSegment);
-                    }
+                if (bestMatch) {
+                    segments.push(bestMatch.rule.renderer(bestMatch.match, parseInline));
+                    cursor += bestMatch.match[0].length;
                 } else {
-                    const lines = block.split('\n');
-                    for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
-                        if (!line && i < lines.length -1) {
-                            resultSegments.push({ type: 'br', content: '' });
-                            continue;
-                        }
+                    const nextSpecial = remaining.search(/[*_~`<@\[!]|https?:|img|video|webm|youtube/i);
+                    let textContent = "";
+                    let advance = 0;
 
-                        let isLoneFormatter = false;
-                        for (const rule of loneFormatterRules) {
-                            // Match against the line (allowing for surrounding whitespace)
-                            const match = line.match(rule.regex);
-                            if (match) {
-                                isLoneFormatter = true;
-
-                                // Extract the text inside the formatting (e.g., "Now Let's Set Sail To Season 3!")
-                                const innerContent = match[1];
-
-                                // Parse that inner text for any other markdown
-                                const parsedInnerSegments = parseInline(innerContent);
-
-                                // Create the correct nested structure:
-                                // A 'center' block containing an 'italic' block, which holds the final content.
-                                resultSegments.push({
-                                    type: 'center',
-                                    content: [{
-                                        type: rule.type as 'bold' | 'italic' | 'strike',
-                                        content: parsedInnerSegments,
-                                    }]
-                                });
-                                break; // Rule matched, no need to check others
-                            }
-                        }
-
-                        if (isLoneFormatter) {
-                            if (i < lines.length - 1) resultSegments.push({ type: 'br', content: '' });
-                            continue; // Skip to the next line
-                        }
-
-                        let matchedLineRule = false;
-                        for(const rule of lineStartRules) {
-                            const match = line.match(rule.regex);
-                            if(match) {
-                                matchedLineRule = true;
-                                resultSegments.push({ type: rule.type as CommentSegment['type'], ...rule.process(match) });
-                                break;
-                            }
-                        }
-
-                        if (!matchedLineRule && line) {
-                            resultSegments.push(...parseInline(line));
-                        }
-                        if (i < lines.length - 1) {
-                            resultSegments.push({ type: 'br', content: '' });
-                        }
+                    if (nextSpecial === -1) {
+                        textContent = remaining;
+                        advance = remaining.length;
+                    } else if (nextSpecial === 0) {
+                        textContent = remaining[0];
+                        advance = 1;
+                    } else {
+                        textContent = remaining.slice(0, nextSpecial);
+                        advance = nextSpecial;
                     }
+
+                    const lastSegment = segments[segments.length - 1];
+                    if (lastSegment && lastSegment.type === 'text') {
+                        lastSegment.content += textContent;
+                    } else {
+                        segments.push({ type: 'text', content: textContent });
+                    }
+                    cursor += advance;
                 }
             }
-
-            return resultSegments;
+            return segments;
         }
 
-        function renderSegment(segment: CommentSegment, key: string): any {
-            const textStyle = { wordBreak: 'normal' as const, overflowWrap: 'break-word' as const, lineHeight: '1.6', display: 'inline' };
+        function parseParagraphsAndLists(text: string): CommentSegment[] {
+            const res: CommentSegment[] = [];
+            const lines = text.split('\n');
+            let buffer = "";
 
-            const renderContent = (content: string | CommentSegment[]) => {
-                if (typeof content === 'string') return [tray.text({ text: content, style: textStyle })];
-                return content.map((subSegment, index) => renderSegment(subSegment, `${key}-${index}`));
+            const flushBuffer = () => {
+                if (buffer) {
+                    res.push(...parseInline(buffer));
+                    buffer = "";
+                }
+            };
+        
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const listMatch = line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)/);
+                
+                if (listMatch) {
+                    flushBuffer();
+                    const indent = Math.floor(listMatch[1].length / 2); 
+                    res.push({ 
+                        type: 'list-item', 
+                        level: indent, 
+                        content: parseInline(listMatch[3]) 
+                    });
+                } else {
+                    buffer += line + (i < lines.length - 1 ? '\n' : '');
+                }
+            }
+            flushBuffer();
+            return res;
+        }
+
+        function parseComment(rawText: string): CommentSegment[] {
+            const text = decodeHtmlEntities(rawText);
+            const segments: CommentSegment[] = [];
+
+            const blockSplitter = /(^```[\s\S]*?```)|(^~~~[\s\S]*?~~~|^<center>[\s\S]*?<\/center>)|(^>[\s\S]+?)|(^(?:#{1,6})\s+.*)|(^---$|^\*\*\*$)|((?:~!|!~)[\s\S]*?(?:!~|~!))|(<center>[\s\S]*?<\/center>)/gm;
+
+            let lastIndex = 0;
+            let match;
+
+            while ((match = blockSplitter.exec(text)) !== null) {
+                if (match.index > lastIndex) {
+                    const preBlockText = text.substring(lastIndex, match.index);
+                    segments.push(...parseParagraphsAndLists(preBlockText));
+                }
+
+                const fullBlock = match[0];
+
+                if (match[1]) { 
+                    const content = match[1].replace(/^```|```$/g, '').trim();
+                    segments.push({ type: 'code-block', content });
+                } else if (match[2]) {
+                    const raw = fullBlock.slice(3, -3);
+                    segments.push({ type: 'center', content: parseInline(raw.trim()) });
+                } else if (match[3]) {
+                    const raw = fullBlock.replace(/^>\s?/gm, '');
+                    segments.push({ type: 'blockquote', content: parseInline(raw.trim()) });
+                } else if (match[4]) {
+                    const level = match[4].match(/^#+/)[0].length;
+                    const content = match[4].replace(/^#+\s*/, '');
+                    segments.push({ type: 'heading', level: Math.min(level, 5), content: parseInline(content) });
+                } else if (match[5]) {
+                    segments.push({ type: 'hr', content: '' });
+                } else if (match[6]) {
+                    const raw = fullBlock.slice(2, -2);
+                    segments.push({ type: 'spoiler', content: parseComment(raw) });
+                } else if (match[7]) { 
+                    const raw = fullBlock.replace(/^<center>|<\/center>$/gi, '');
+                    segments.push({ type: 'center', content: parseInline(raw.trim()) });
+                }
+
+                lastIndex = match.index + fullBlock.length;
+            }
+
+            if (lastIndex < text.length) {
+                segments.push(...parseParagraphsAndLists(text.substring(lastIndex)));
+            }
+
+            return segments;
+        }
+
+        // --- RENDERER ---
+        function renderSegment(segment: CommentSegment, key: string): any {
+            const baseStyle = { wordBreak: 'break-word', lineHeight: '1.6', display: 'inline' };
+
+            const renderChildren = (content: string | CommentSegment[]) => {
+                if (typeof content === 'string') return [tray.text({ text: content, style: baseStyle })];
+                return content.map((seg, idx) => renderSegment(seg, `${key}-${idx}`));
             };
 
             const createWrapper = (children: any[], style: object, display: 'inline' | 'block' = 'inline', extraProps: object = {}) => {
-                 return tray.div(children, { style: { ...style, display }, ...extraProps });
+                return tray.div(children, { style: { ...style, display }, ...extraProps });
             };
 
             switch (segment.type) {
-                case 'text': return tray.text({ text: segment.content as string, style: textStyle });
-                case 'br': return tray.div([], { style: { height: '0.5em', width: '100%', display: 'block' } });
-			    case 'bold-italic': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontWeight: 'bold', fontStyle: 'italic' });
-                case 'bold': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontWeight: 'bold' });
-                case 'italic': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontStyle: 'italic' });
-                case 'underline': return createWrapper(renderContent(segment.content as CommentSegment[]), { textDecoration: 'underline' });
-                case 'strike': return createWrapper(renderContent(segment.content as CommentSegment[]), { textDecoration: 'line-through' });
-                case 'heading': return createWrapper(renderContent(segment.content as CommentSegment[]), { fontSize: `${1.5 - (segment.level! * 0.1)}em`, fontWeight: 'semibold', marginTop: '0.5em', marginBottom: '0.5em'}, 'block');
-                case 'hr': return tray.div([], { style: { borderTop: '1px solid #4A5568', margin: '8px 0', display: 'block' } });
-                case 'blockquote': return createWrapper(renderContent(segment.content as CommentSegment[]), { borderLeft: '3px solid #4A5568', paddingLeft: '8px', color: '#A0AEC0', margin: '8px 0' }, 'block');
-                case 'center': return createWrapper(renderContent(segment.content as CommentSegment[]), { textAlign: 'center', margin: '8px 0' }, 'block');
-                case 'inline-code': return tray.text({ text: segment.content as string, style: { fontFamily: 'monospace', backgroundColor: '#2D3748', padding: '2px 4px', borderRadius: '4px', ...textStyle } });
-                case 'code-block': return tray.div([tray.text({text: segment.content as string, style: { ...textStyle, display: 'block' }})], { style: { fontFamily: 'monospace', backgroundColor: '#1A202C', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap', width: '100%', display: 'block', margin: '8px 0' } });
+                case 'text': return tray.text({ text: segment.content as string, style: baseStyle });
+                case 'br': return tray.div([], { style: { height: '8px', width: '100%', display: 'block' } });
+                case 'hr': return tray.div([], { style: { borderBottom: '1px solid rgba(255,255,255,0.1)', width: '100%', margin: '10px 0' } });
                 
-                case 'spoiler':
-                    const isRevealed = revealedSpoilers.get()[key];
-                    if (isRevealed) {
-                        return tray.stack([
-                            tray.div(
-                                renderContent(segment.content as CommentSegment[]),
-                                {
-                                    style: {
-                                        background: '#2D3748',
-                                        padding: '2px 4px',
-                                        borderRadius: '4px',
-                                        display: 'inline-block',
-                                    }
-                                }
-                            ),
-                            tray.button({
-                                label: ' ',
-                                onClick: ctx.eventHandler(key, () => {
-                                    revealedSpoilers.set(s => ({ ...s, [key]: false }));
-                                }),
+                case 'bold': return createWrapper(renderChildren(segment.content as any), { fontWeight: 'bold' });
+                case 'italic': return createWrapper(renderChildren(segment.content as any), { fontStyle: 'italic' });
+                case 'strike': return createWrapper(renderChildren(segment.content as any), { textDecoration: 'line-through', opacity: 0.7 });
+                case 'center': return createWrapper(renderChildren(segment.content as any), { textAlign: 'center', width: '100%' }, 'block');
+                
+                case 'blockquote':
+                    return tray.div(renderChildren(segment.content as any), { 
+                        style: { 
+                            borderLeft: '4px solid rgba(255,255,255,0.2)', 
+                            paddingLeft: '10px', 
+                            marginLeft: '5px',
+                            color: 'rgba(255,255,255,0.7)',
+                            fontStyle: 'italic',
+                            display: 'block',
+                            margin: '8px 0'
+                        } 
+                    });
+
+                case 'heading':
+                    const sizes = ['1.75em', '1.5em', '1.25em', '1.1em', '1em']; 
+                    return tray.div(renderChildren(segment.content as any), { 
+                        style: { 
+                            fontWeight: 'bold', 
+                            fontSize: sizes[(segment.level || 1) - 1], 
+                            margin: '10px 0 5px 0',
+                            display: 'block',
+                            color: '#E2E8F0'
+                        } 
+                    });
+
+                case 'code-block':
+                    return tray.div([tray.text({ text: segment.content as string })], {
+                        style: { 
+                            backgroundColor: '#111', 
+                            padding: '10px', 
+                            borderRadius: '5px', 
+                            fontFamily: 'monospace', 
+                            whiteSpace: 'pre-wrap',
+                            display: 'block',
+                            margin: '8px 0',
+                            width: '100%'
+                        }
+                    });
+
+                case 'inline-code':
+                    return tray.text({ 
+                        text: ` ${segment.content} `, 
+                        style: { 
+                            backgroundColor: '#1A202C', 
+                            fontFamily: 'monospace', 
+                            padding: '2px 4px', 
+                            borderRadius: '3px',
+                            display: 'inline'
+                        } 
+                    });
+
+                case 'list-item':
+                    return tray.flex([
+                        tray.text({ text: '•', style: { marginRight: '8px', color: 'gray' } }),
+                        tray.div(renderChildren(segment.content as any), {})
+                    ], { style: { marginLeft: `${(segment.level || 0) * 20}px`, marginBottom: '4px' } });
+
+                case 'link':
+                    let linkLabel = 'Link';
+                    if (typeof segment.content === 'string') {
+                        linkLabel = segment.content;
+                    } else if (Array.isArray(segment.content)) {
+                        // Extract text from the segment array
+                        linkLabel = segment.content.map(s => {
+                            if (typeof s.content === 'string') return s.content;
+                            return ''; 
+                        }).join('') || 'Link';
+                    }
+
+                    return tray.button({ 
+                        label: linkLabel, 
+                        intent: 'link', 
+                        size: 'sm',
+                        onClick: ctx.eventHandler(key, () => linkConfirmation.set({ url: segment.url!, message: "Open this link?" })) 
+                    });
+
+                case 'user-link':
+                    return tray.button({
+                        label: segment.content as string,
+                        intent: 'link',
+                        size: 'sm',
+                        onClick: ctx.eventHandler(`${key}-user`, () => linkConfirmation.set({ url: `https://anilist.co/user/${segment.username}`, message: "Visit user profile?" }))
+                    });
+
+                case 'image':
+                    const imgUrl = segment.url || (segment.content as string);
+                    const widthStyle = segment.width ? segment.width : '400px'; 
+                    
+                    return tray.stack([
+                        tray.div([], { 
+                            style: { 
+                                width: '100%',
+                                maxWidth: widthStyle,
+                                aspectRatio: '16 / 9',
+                                backgroundImage: `url("${imgUrl}")`, 
+                                backgroundSize: 'contain', 
+                                backgroundPosition: 'left center', 
+                                backgroundRepeat: 'no-repeat', 
+                                borderRadius: '4px',
+                                backgroundColor: 'transparent',
+                            } 
+                        }),
+                        tray.button({
+                            label: ' ',
+                            onClick: ctx.eventHandler(`view-img-${key}`, () => imageToView.set(imgUrl)),
+                            style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: 'transparent', border: 'none', cursor: 'pointer' }
+                        })
+                    ], { 
+                        style: { 
+                            position: 'relative', 
+                            display: 'block',
+                            marginTop: '8px', 
+                            marginBottom: '8px',
+                            maxWidth: widthStyle 
+                        } 
+                    });
+
+                case 'youtube':
+                    return tray.stack([
+                        tray.div([], {
+                            style: {
+                                width: '100%',
+                                maxWidth: '400px',
+                                aspectRatio: '16 / 9',
+                                backgroundImage: `url("https://img.youtube.com/vi/${segment.content}/mqdefault.jpg")`,
+                                backgroundSize: 'cover',
+                                backgroundPosition: 'center',
+                                borderRadius: '8px',
+                                border: '1px solid #2D3748',
+                                position: 'relative'
+                            }
+                        }),
+                        tray.div([
+                            tray.div([], {
                                 style: {
-                                    position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
-                                    background: 'transparent', border: 'none', color: 'transparent', cursor: 'pointer',
+                                    width: '0', height: '0',
+                                    borderTop: '10px solid transparent',
+                                    borderBottom: '10px solid transparent',
+                                    borderLeft: '16px solid white',
+                                    marginLeft: '4px'
                                 }
                             })
                         ], {
                             style: {
-                                position: 'relative', display: 'inline-block', verticalAlign: 'baseline',
+                                position: 'absolute',
+                                top: '50%', left: '50%',
+                                transform: 'translate(-50%, -50%)',
+                                width: '48px', height: '48px',
+                                backgroundColor: 'rgba(0,0,0,0.6)',
+                                borderRadius: '50%',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center'
                             }
+                        }),
+                        tray.button({
+                            label: ' ',
+                            onClick: ctx.eventHandler(`play-yt-${key}`, () => linkConfirmation.set({ url: segment.url!, message: "Open YouTube video?" })),
+                            style: {
+                                position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+                                background: 'transparent', border: 'none', cursor: 'pointer'
+                            }
+                        })
+                    ], { style: { position: 'relative', margin: '8px 0', maxWidth: '400px' } });
+
+                case 'video':
+                    return tray.button({
+                        label: '▶ Watch Video',
+                        intent: 'primary-subtle',
+                        size: 'sm',
+                        onClick: ctx.eventHandler(`play-vid-${key}`, () => linkConfirmation.set({ url: segment.url!, message: "Open video link?" })),
+                        style: { margin: '8px 0' }
+                    });
+
+                case 'spoiler':
+                    const isRevealed = revealedSpoilers.get()[key];
+                    if (isRevealed) {
+                        return tray.div([
+                            tray.div(renderChildren(segment.content as any), { style: { display: 'inline' } }),
+                            tray.button({
+                                label: ' ',
+                                onClick: ctx.eventHandler(`${key}-hide`, () => revealedSpoilers.set(s => ({ ...s, [key]: false }))),
+                                style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: 'transparent', border: 'none', cursor: 'pointer' }
+                            })
+                        ], { 
+                            style: { 
+                                position: 'relative', 
+                                display: 'inline-block', 
+                                background: '#2D3748', 
+                                padding: '2px 6px', 
+                                borderRadius: '3px' 
+                            } 
                         });
                     } else {
                         return tray.button({ 
                             label: "Spoiler", 
                             intent: "primary-subtle", 
                             size: "sm", 
-                            onClick: ctx.eventHandler(key, () => {
-                                revealedSpoilers.set(s => ({ ...s, [key]: true }));
-                            }) 
+                            onClick: ctx.eventHandler(`${key}-show`, () => revealedSpoilers.set(s => ({ ...s, [key]: true }))) 
                         });
                     }
 
-                case 'image':
-                    const imageUrl = segment.content as string;
-                    const linkUrlForImage = segment.url || imageUrl;
-                    return tray.stack([
-                        tray.stack([
-                            tray.div([], { 
-                                style: { 
-                                    width: '100%', 
-                                    maxWidth: '300px', 
-                                    aspectRatio: '16 / 9', 
-                                    backgroundImage: `url("${imageUrl}")`, 
-                                    backgroundSize: 'contain', 
-                                    backgroundPosition: 'center', 
-                                    backgroundRepeat: 'no-repeat', 
-                                    borderRadius: '4px',
-                                    backgroundColor: 'transparent',
-                                    border: '1px solid #2D3748'
-                                } 
-                            }),
-                            tray.button({
-                                label: ' ',
-                                onClick: ctx.eventHandler(`view-image-${key}`, () => imageToView.set(imageUrl)),
-                                style: {
-                                    position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
-                                    background: 'transparent', border: 'none', cursor: 'pointer',
-                                }
-                            })
-                        ], { style: { position: 'relative' } }),
-                        tray.flex([
-                            tray.text({ text: "Image may not load.", size: "sm", color: "gray" }),
-                            ...(linkUrlForImage ? [tray.button({ label: "Open Link", intent: 'link', size: 'sm', onClick: ctx.eventHandler(`${key}-open`, () => linkConfirmation.set({ url: linkUrlForImage, message: "Are you sure you want to open this link?" })) })] : [])
-                        ], { style: { gap: 2, alignItems: 'center', marginTop: '2px' } })
-                    ], { style: { gap: 1, marginTop: '4px', display: 'inline-block' } });
-                
-                case 'link':
-                     const linkContent = segment.content;
-                     if(Array.isArray(linkContent) && linkContent.length > 0) {
-                        return createWrapper(renderContent(linkContent), { color: '#66b2ff', textDecoration: 'underline', cursor: 'pointer' }, 'inline', { onClick: ctx.eventHandler(key, () => linkConfirmation.set({ url: segment.url!, message: "Are you sure you want to open this link?" }))});
-                     }
-                    const linkText = (segment.content as string).length > 50 ? (segment.content as string).substring(0, 47) + '...' : (segment.content as string);
-                    return tray.button({ label: linkText, intent: 'link', size: 'sm', onClick: ctx.eventHandler(key, () => linkConfirmation.set({ url: segment.url!, message: "Are you sure you want to open this link?" })) });
-
-                case 'user-link':
-                    const userUrl = `https://anilist.co/user/${segment.username}`;
-                    return tray.button({
-                        label: segment.content as string,
-                        intent: 'link',
-                        size: 'sm',
-                        onClick: ctx.eventHandler(`${key}-user`, () => linkConfirmation.set({ url: userUrl, message: "Are you sure you want to visit this user's profile?" }))
-                    });
-
                 default:
-                    return tray.text({text: ''});
+                    return tray.text({ text: '' });
             }
         }
-
-        // ===================================================================================
-        // END OF NEW PARSING ENGINE
-        // ===================================================================================
 
         function formatTimeAgo(timestamp: number): string {
             if (!timestamp) return "";
@@ -503,9 +632,21 @@ function init() {
         const generalDiscussions = ctx.state<Thread[]>([]);
         const generalDiscussionsPage = ctx.state(1);
         const generalDiscussionsHasNextPage = ctx.state(false);
-        // NEW: Token for aborting stale requests
         const currentFetchToken = ctx.state<number | null>(null);
 
+        // Encapsulates the logic for resetting the view state.
+        function resetViewState() {
+            selectedThread.set(null);
+            comments.set(null);
+            view.set('list');
+            revealedSpoilers.set({});
+            replyingToCommentId.set(null);
+            editingCommentId.set(null);
+            isSubmitting.set(false);
+            commentsPage.set(1);
+            commentsHasNextPage.set(false);
+            error.set(null);
+        }
 
         // --- API SERVICE (ABSTRACTION) ---
         const anilistApi = {
@@ -527,7 +668,6 @@ function init() {
                 const data = await this._fetch(query, {});
                 return data.Viewer;
             },
-            // CHANGED: fetchThreadsPage now accepts an optional categoryId for filtering
             fetchThreadsPage: async function(params: { mediaId: number; sort: string; page: number; categoryId?: number }) {
                 const { mediaId, sort, page, categoryId } = params;
                 const query = `
@@ -547,7 +687,10 @@ function init() {
                 
                 const processedThreads = (data.Page.threads || []).map((thread: any) => {
                     const isEpisode = thread.categories?.some((c: any) => c.name === "Release Discussion");
-                    const match = thread.title.match(/(?:Episode|Ep\.?)\s*(\d+)/i);
+                    
+                    // FIXED REGEX: Now supports "Episode 1", "Ep. 1", and "S02E03" formats
+                    const match = thread.title.match(/(?:Episode|Ep\.?|S\d+E)\s*(\d+)/i);
+                    
                     return { ...thread, isEpisode, episodeNumber: match ? parseInt(match[1], 10) : 0 };
                 });
                 return { threads: processedThreads, pageInfo: data.Page.pageInfo };
@@ -602,9 +745,7 @@ function init() {
             } catch (e: any) { console.error("Failed to fetch viewer info:", e.message); }
         };
 
-        // CHANGED: Replaced old fetcher with new parallel, abortable functions
         const loadInitialDiscussions = async (mediaId: number) => {
-            // NEW: Generate a unique token for this fetch operation
             const token = Date.now();
             currentFetchToken.set(token);
         
@@ -617,28 +758,22 @@ function init() {
         
             try {
                 const animeEntry = await ctx.anime.getAnimeEntry(mediaId);
-                // NEW: Abort if a newer request has started
                 if (token !== currentFetchToken.get()) return;
                 currentMediaTitle.set(animeEntry?.media?.title?.userPreferred || null);
         
-                // NEW: Fetch episode discussions and all discussions in parallel
                 const [episodeResults, allThreadsResults] = await Promise.all([
-                    // AniList Category ID 5 is for "Release Discussion"
-                    anilistApi.fetchThreadsPage({ mediaId, sort: threadSort.get(), page: 1, categoryId: 5 }),
+                    anilistApi.fetchThreadsPage({ mediaId, sort: threadSort.get(), page: 1, categoryId: ANILIST_EPISODE_DISCUSSION_CATEGORY_ID }),
                     anilistApi.fetchThreadsPage({ mediaId, sort: threadSort.get(), page: 1 })
                 ]);
                 
-                // NEW: Abort if a newer request has started after fetches complete
                 if (token !== currentFetchToken.get()) return;
         
                 const epDiscussions = episodeResults.threads;
-                // Filter out episode discussions from the "all" list to get general discussions
                 const genDiscussions = allThreadsResults.threads.filter(t => !t.isEpisode);
         
                 episodeDiscussions.set(epDiscussions);
                 generalDiscussions.set(genDiscussions);
                 generalDiscussionsPage.set(1);
-                // The "all threads" pagination determines if there are more general discussions
                 generalDiscussionsHasNextPage.set(allThreadsResults.pageInfo.hasNextPage);
         
             } catch (e: any) {
@@ -655,7 +790,6 @@ function init() {
         const loadMoreDiscussions = async () => {
             if (isLoading.get() || !generalDiscussionsHasNextPage.get()) return;
         
-            // NEW: Abortable request logic
             const token = Date.now();
             currentFetchToken.set(token);
             
@@ -668,10 +802,8 @@ function init() {
             }
         
             try {
-                // Fetch the next page of ALL threads, as we don't know if they are general or episode
                 const { threads, pageInfo } = await anilistApi.fetchThreadsPage({ mediaId, sort: threadSort.get(), page: nextPage });
                 
-                // NEW: Abort if a newer request has started
                 if (token !== currentFetchToken.get()) return;
         
                 const newEpDiscussions = threads.filter(t => t.isEpisode);
@@ -910,19 +1042,14 @@ function init() {
             selectionState.set({ start: e.cursorStart, end: e.cursorEnd, text: e.selectedText });
         });
 
-        ctx.registerEventHandler("back-to-list", () => {
-            view.set('list'); selectedThread.set(null); comments.set(null); revealedSpoilers.set({}); replyingToCommentId.set(null); editingCommentId.set(null); isSubmitting.set(false); commentsPage.set(1); commentsHasNextPage.set(false);
-        });
+        ctx.registerEventHandler("back-to-list", () => resetViewState());
         ctx.registerEventHandler("cancel-reply", () => { replyingToCommentId.set(null); isReplyingToThread.set(false); replyInputRef.setValue(""); });
         ctx.registerEventHandler("cancel-edit", () => { editingCommentId.set(null); editInputRef.setValue(""); });
         ctx.registerEventHandler("load-more-comments", () => { if (selectedThread.get()) fetchComments(selectedThread.get()!.id, commentsPage.get() + 1); });
         ctx.registerEventHandler("go-to-create-view", () => { threadTitleInputRef.setValue(""); threadBodyInputRef.setValue(""); view.set('create'); });
         ctx.registerEventHandler("submit-thread", () => handleSaveThread());
         ctx.registerEventHandler("submit-edit-thread", () => handleSaveThread(selectedThread.get()!.id));
-        // CHANGED: Use the new loadMore function
-        ctx.registerEventHandler('load-more-general-threads', () => {
-            loadMoreDiscussions();
-        });
+        ctx.registerEventHandler('load-more-general-threads', () => loadMoreDiscussions());
         
         function renderToolbar(fieldRef: any) {
             const applyFormatting = (prefix: string, suffix: string, isBlock: boolean = false) => {
@@ -1017,7 +1144,7 @@ function init() {
                     ], { style: { height: '100%', padding: '0 10px' } });
                 }
 
-                if (error.get()) return centralMessage(error.get()!);
+                if (error.get()) return centralMessage(`An error occurred: ${error.get()!}\nPlease try again.`);
 
                 const me = currentUser.get();
                 const renderComment = (comment: ThreadComment) => {
@@ -1430,15 +1557,8 @@ function init() {
                 const id = parseInt(e.searchParams.id);
                 if (currentMediaId.get() !== id) {
                     currentMediaId.set(id);
-                    selectedThread.set(null);
-                    view.set('list');
-                    revealedSpoilers.set({});
-                    replyingToCommentId.set(null);
-                    editingCommentId.set(null);
-                    isSubmitting.set(false);
-                    commentsPage.set(1);
-                    commentsHasNextPage.set(false);
                     fetchingMediaId.set(null);
+                    resetViewState();
                 }
             } else {
                 currentMediaId.set(null);
