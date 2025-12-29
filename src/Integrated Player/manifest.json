@@ -7,7 +7,7 @@
     "type": "plugin",
     "description": "Read AniList discussions inside Seanime’s built-in video player.",
     "author": "Bas1874",
-    "icon": "https://raw.githubusercontent.com/Bas1874/anilist-discussion/refs/heads/main/src/Icons/In%20player.png",
+    "icon": "https://raw.githubusercontent.com/Bas1874/anilist-discussion/refs/heads/main/src/Icons/In-Player%20Discussions4.png",
     "website": "https://github.com/Bas1874/anilist-discussion/tree/main",
     "lang": "multi",
     "payloadURI": "https://raw.githubusercontent.com/Bas1874/anilist-discussion/refs/heads/main/src/Integrated%20Player/Anilist%20Discussions%20(Integrated%20Player).ts",
