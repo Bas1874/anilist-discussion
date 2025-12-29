@@ -1,0 +1,28 @@
+{
+    "id": "Anilist-Discussions-Integrated-Player",
+    "name": "Anilist Discussions (Integrated Player)",
+    "version": "1.0.0",
+    "manifestURI": "",
+    "language": "typescript",
+    "type": "plugin",
+    "description": "Read AniList discussions inside Seanime’s built-in video player.",
+    "author": "Bas1874",
+    "icon": "",
+    "website": "",
+    "lang": "multi",
+    "payloadURI": "",
+    "plugin": {
+        "version": "1",
+        "permissions": {
+            "scopes": [
+                "anilist",
+                "database",
+                "anilist-token",
+                "system",
+                "playback"
+            ],
+            "allow": {}
+        }
+    },
+    "isDevelopment": false
+}
