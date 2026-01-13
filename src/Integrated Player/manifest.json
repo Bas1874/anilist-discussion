@@ -21,7 +21,14 @@
                 "system",
                 "playback"
             ],
-            "allow": {}
+            "allow": {
+                "unsafeFlags": [
+                    {
+                        "flag": "dom-script-manipulation",
+                        "reason": "Required to render the discussion overlay and rich-text formatting (markdown, spoilers) inside the video player."
+                    }
+                ]
+            }
         }
     },
     "isDevelopment": false
